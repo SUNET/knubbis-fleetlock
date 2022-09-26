@@ -1,0 +1,40 @@
+[server]
+listen = ":8443"
+readtimeout = "10s"
+writetimeout = "10s"
+backend = "etcd3"
+shutdowndelay = "5s"
+[ratelimit]
+rate = 1.0
+burst = 3
+[etcd3]
+endpoints = ["https://localhost:2379"]
+username = "knubbis-fleetlock"
+password = "changeme"
+insecureskipverify = false
+[certmagic]
+salt = "36023a78c7d2000ac58604da1b630a9e"
+password = "changeme"
+etcd3path = "com.example.fleetlock/certmagic"
+letsencryptprod = false
+email = "someone@example.com"
+domains = ["fleetlock.example.com"]
+[acmedns."fleetlock.example.com"]
+username = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+password = "changeme"
+subdomain = "eeeeeeee-dddd-cccc-bbbb-aaaaaaaaaaaa"
+fulldomain = "eeeeeeee-dddd-cccc-bbbb-aaaaaaaaaaaa.acme-dns.example.com"
+serverurl = "https://acme-dns.example.com"
+[fleetlock.workers]
+totalSlots = 2
+[fleetlock.apps]
+totalSlots = 2
+[prometheus]
+listen = "127.0.0.1:2222"
+readtimeout = "10s"
+writetimeout = "10s"
+[permissions.workers1]
+'*' = "changeme1"
+[permissions.dbs]
+'id1' = "changeme2"
+'id2' = "changeme3"
