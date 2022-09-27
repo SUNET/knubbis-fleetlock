@@ -20,11 +20,15 @@ service used at Google, see: [The Chubby lock service for loosely-coupled distri
 * Client responses include a `request-id` HTTP header which is also present in log messages related to that request.
 
 ## Building
+### Basic binary
 The server version is expected to be supplied at build time (otherwise
 it will just use the version tag "unspecified"):
 ```
-go build -ldflags="-X 'github.com/SUNET/knubbis-fleetlock/server.version=v0.0.1'
+CGO_ENABLED=0 go build -ldflags="-X 'github.com/SUNET/knubbis-fleetlock/server.version=v0.0.1'"
 ```
+### Docker
+VERSION=v0.0.1
+docker build -t knubbis-fleetlock:$VERSION --build-arg VERSION=$VERSION .
 
 ## CertMagic details
 The server uses [CertMagic](https://github.com/caddyserver/certmagic) for automatic handling of ACME certificates. This repo contains a etcd3 backend for CertMagic so that certificate storage can be handled by the same etcd3 cluster that stores the FleetLock semaphore. The backend stores all ACME data using AES256-GCM encryption.
