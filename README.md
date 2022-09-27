@@ -27,8 +27,10 @@ it will just use the version tag "unspecified"):
 CGO_ENABLED=0 go build -ldflags="-X 'github.com/SUNET/knubbis-fleetlock/server.version=v0.0.1'"
 ```
 ### Docker
+```
 VERSION=v0.0.1
 docker build -t knubbis-fleetlock:$VERSION --build-arg VERSION=$VERSION .
+```
 
 ## CertMagic details
 The server uses [CertMagic](https://github.com/caddyserver/certmagic) for automatic handling of ACME certificates. This repo contains a etcd3 backend for CertMagic so that certificate storage can be handled by the same etcd3 cluster that stores the FleetLock semaphore. The backend stores all ACME data using AES256-GCM encryption.
