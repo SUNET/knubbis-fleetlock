@@ -1,0 +1,5 @@
+builders:
+  - script
+script:
+  - "./jenkins-docker-build-and-push.sh"
+clean_workspace: true
