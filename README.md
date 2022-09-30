@@ -71,7 +71,7 @@ The server expects etcd3 to run with HTTPS endpoints and authentication enabled,
 ```
 etcdctl --user root user add knubbis-fleetlock
 etcdctl --user root role add knubbis-fleetlock-role
-etcdctl --user root role grant-permission knubbis-fleetlockd-role readwrite se.sunet.knubbis/fleetlock/groups/workers/v1/semaphore
+etcdctl --user root role grant-permission --prefix=true knubbis-fleetlock-role readwrite se.sunet.knubbis/fleetlock/groups/
 etcdctl --user root role grant-permission --prefix=true knubbis-fleetlock-role readwrite se.sunet.knubbis/certmagic/
 etcdctl --user root user grant-role knubbis-fleetlock knubbis-fleetlock-role
 ```
