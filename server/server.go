@@ -125,7 +125,12 @@ type acmeDNSDomainSettings struct {
 	ServerURL  string
 }
 
-func fleetLockSendError(fle fleetlock.FleetLockError, statusCode int, w http.ResponseWriter) error {
+func fleetLockSendError(kind, value string, statusCode int, w http.ResponseWriter) error {
+	fle := fleetlock.FleetLockError{
+		Kind:  kind,
+		Value: value,
+	}
+
 	b, err := json.Marshal(fle)
 	if err != nil {
 		return fmt.Errorf("fleetLockSendError: failed creating FleetLock error response: %w", err)
@@ -154,11 +159,7 @@ func preRebootFunc(flMap map[string]fleetlock.FleetLocker, timeout time.Duration
 			logger.Error().
 				Msg("group does not exist in config")
 
-			fle := fleetlock.FleetLockError{
-				Kind:  "failed_lock",
-				Value: "group does not exist in config",
-			}
-			err := fleetLockSendError(fle, http.StatusInternalServerError, w)
+			err := fleetLockSendError("failed_lock", "group does not exist in config", http.StatusInternalServerError, w)
 			if err != nil {
 				logger.Error().
 					Msgf("failed sending RecursiveLock error: %s", err)
@@ -173,14 +174,9 @@ func preRebootFunc(flMap map[string]fleetlock.FleetLocker, timeout time.Duration
 
 		err := groupLocker.RecursiveLock(lockerCtx, fld.ClientParams.ID)
 		if err != nil {
-			logger.Error().
-				Msg("failed getting lock")
+			logger.Err(err).Msg("failed getting lock")
 
-			fle := fleetlock.FleetLockError{
-				Kind:  "failed_lock",
-				Value: err.Error(),
-			}
-			err = fleetLockSendError(fle, http.StatusInternalServerError, w)
+			err = fleetLockSendError("failed_lock", http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError, w)
 			if err != nil {
 				logger.Error().
 					Msgf("failed sending RecursiveLock error: %s", err)
@@ -211,11 +207,7 @@ func steadyStateFunc(flMap map[string]fleetlock.FleetLocker, timeout time.Durati
 			logger.Error().
 				Msg("group does not exist in config")
 
-			fle := fleetlock.FleetLockError{
-				Kind:  "failed_lock",
-				Value: "group does not exist in config",
-			}
-			err := fleetLockSendError(fle, http.StatusInternalServerError, w)
+			err := fleetLockSendError("failed_lock", "group does not exist in config", http.StatusInternalServerError, w)
 			if err != nil {
 				logger.Error().
 					Msgf("failed sending RecursiveLock error: %s", err)
@@ -230,14 +222,10 @@ func steadyStateFunc(flMap map[string]fleetlock.FleetLocker, timeout time.Durati
 
 		err := groupLocker.UnlockIfHeld(lockerCtx, fld.ClientParams.ID)
 		if err != nil {
-			logger.Error().
+			logger.Err(err).
 				Msg("failed getting lock")
 
-			fle := fleetlock.FleetLockError{
-				Kind:  "failed_unlock",
-				Value: err.Error(),
-			}
-			err = fleetLockSendError(fle, http.StatusInternalServerError, w)
+			err = fleetLockSendError("failed_unlock", http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError, w)
 			if err != nil {
 				logger.Error().
 					Msgf("failed sending RecursiveLock error: %s", err)
@@ -362,14 +350,8 @@ func ratelimitMiddleware(conf serverConfig, rl *rateLimiter) alice.Constructor {
 			addrPort, err := netip.ParseAddrPort(r.RemoteAddr)
 			if err != nil {
 				logger.Err(err).Msg("ratelimitMiddleware: unable to parse RemoteAddr")
-				//http.Error(w, http.StatusText(http.StatusTooManyRequests), http.StatusInternalServerError)
-				//return
-				fle := fleetlock.FleetLockError{
-					Kind:  "server_error",
-					Value: "unable to parse remote address",
-				}
 
-				err := fleetLockSendError(fle, http.StatusInternalServerError, w)
+				err := fleetLockSendError("server_error", "unable to parse remote address", http.StatusInternalServerError, w)
 				if err != nil {
 					logger.Err(err).Msg("failed sending RemoteAddr FleetLock error to client")
 					return
@@ -398,12 +380,8 @@ func ratelimitMiddleware(conf serverConfig, rl *rateLimiter) alice.Constructor {
 			}
 			if !ipl.limiter.Allow() {
 				rl.mutex.Unlock()
-				fle := fleetlock.FleetLockError{
-					Kind:  "request_ratelimit",
-					Value: "you hit a ratelimit, try again later",
-				}
 
-				err := fleetLockSendError(fle, http.StatusTooManyRequests, w)
+				err := fleetLockSendError("request_ratelimit", "you hit a ratelimit, try again later", http.StatusTooManyRequests, w)
 				if err != nil {
 					logger.Error().Msg("failed sending ratelimit FleetLock error to client")
 					return
@@ -567,12 +545,8 @@ func fleetLockValidatorMiddleware() alice.Constructor {
 			if r.Header.Get("fleet-lock-protocol") != "true" {
 				logger.Warn().
 					Msg("missing 'fleet-lock-protocol' header")
-				fle := fleetlock.FleetLockError{
-					Kind:  "invalid_fleetlock_header",
-					Value: "'fleet-lock-protocol' header must be set to 'true'",
-				}
 
-				err := fleetLockSendError(fle, http.StatusBadRequest, w)
+				err := fleetLockSendError("invalid_fleetlock_header", "'fleet-lock-protocol' header must be set to 'true'", http.StatusBadRequest, w)
 				if err != nil {
 					logger.Error().Msg("failed sending FleetLock error to client")
 					w.WriteHeader(http.StatusInternalServerError)
@@ -597,12 +571,8 @@ func fleetLockValidatorMiddleware() alice.Constructor {
 			// group names you would come up with.
 			if len(fld.ClientParams.Group) > 253 {
 				logger.Error().Msg("FleetLock group name too long")
-				fle := fleetlock.FleetLockError{
-					Kind:  "invalid_group",
-					Value: "group name is too long",
-				}
 
-				err := fleetLockSendError(fle, http.StatusBadRequest, w)
+				err := fleetLockSendError("invalid_group", "group name is too long", http.StatusBadRequest, w)
 				if err != nil {
 					logger.Error().Msg("failed sending FleetLock group name too long error to client")
 					w.WriteHeader(http.StatusInternalServerError)
@@ -612,12 +582,8 @@ func fleetLockValidatorMiddleware() alice.Constructor {
 
 			if !fleetlock.ValidGroup.MatchString(fld.ClientParams.Group) {
 				logger.Error().Msg("group is not a valid name")
-				fle := fleetlock.FleetLockError{
-					Kind:  "invalid_group",
-					Value: "group name is not valid",
-				}
 
-				err := fleetLockSendError(fle, http.StatusBadRequest, w)
+				err := fleetLockSendError("invalid_group", "group name is not valid", http.StatusBadRequest, w)
 				if err != nil {
 					logger.Error().Msg("failed sending FleetLock invalid group name error to client")
 					w.WriteHeader(http.StatusInternalServerError)
@@ -641,12 +607,8 @@ func fleetLockValidatorMiddleware() alice.Constructor {
 			// so set the limit at 253 characters for now
 			if len(fld.ClientParams.ID) > 253 {
 				logger.Error().Msg("FleetLock ID too long")
-				fle := fleetlock.FleetLockError{
-					Kind:  "invalid_id",
-					Value: "ID is too long",
-				}
 
-				err := fleetLockSendError(fle, http.StatusBadRequest, w)
+				err := fleetLockSendError("invalid_id", "ID is too long", http.StatusBadRequest, w)
 				if err != nil {
 					logger.Error().Msg("failed sending FleetLock ID too long error to client")
 					w.WriteHeader(http.StatusInternalServerError)
@@ -664,12 +626,8 @@ func fleetLockValidatorMiddleware() alice.Constructor {
 			// support more characters.
 			if !fleetlock.ValidGroup.MatchString(fld.ClientParams.ID) {
 				logger.Error().Msg("FleetLock ID is invalid")
-				fle := fleetlock.FleetLockError{
-					Kind:  "invalid_id",
-					Value: "ID is not valid",
-				}
 
-				err := fleetLockSendError(fle, http.StatusBadRequest, w)
+				err := fleetLockSendError("invalid_id", "ID is not valid", http.StatusBadRequest, w)
 				if err != nil {
 					logger.Error().Msg("failed sending FleetLock invalid ID error to client")
 					w.WriteHeader(http.StatusInternalServerError)
