@@ -4,8 +4,9 @@ This is an implementation of a [FleetLock](https://coreos.github.io/zincati/deve
 It currently supports using [etcd3](https://etcd.io) as a backend for
 the semaphore that is used for handing out locks, but is written with
 the intention that additional backends could be added if needed. The
-format of the semaphore JSON data is the same as is used by the
-[Airlock](https://github.com/coreos/airlock) server.
+format of the semaphore JSON data is based on the format used by the
+[Airlock](https://github.com/coreos/airlock) server but has been
+extended to contain additional information.
 
 ## Knubbis?
 This is just a swedish translation of the name 'Chubby', the lock

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/SUNET/knubbis-fleetlock/fleetlock"
 	"github.com/rs/zerolog"
@@ -13,8 +14,8 @@ import (
 )
 
 type semaphore struct {
-	TotalSlots int      `json:"total_slots"`
-	Holders    []string `json:"holders"`
+	TotalSlots int                `json:"total_slots"`
+	Holders    []fleetlock.Holder `json:"holders"`
 }
 
 // The type implementing the FleetLock interface using etcd3 as a
@@ -24,9 +25,14 @@ type Etcd3Backend struct {
 	key        string
 	totalSlots int
 	group      string
+	staleAge   fleetlock.Duration
 }
 
-func NewLocker(client *clientv3.Client, group string, totalSlots int) (*Etcd3Backend, error) {
+func NewLocker(client *clientv3.Client, group string, totalSlots int, staleAge time.Duration) (*Etcd3Backend, error) {
+
+	fld := fleetlock.Duration{
+		Duration: staleAge,
+	}
 
 	if !fleetlock.ValidGroup.MatchString(group) {
 		return nil, fmt.Errorf("group name '%s' is not valid", group)
@@ -36,6 +42,7 @@ func NewLocker(client *clientv3.Client, group string, totalSlots int) (*Etcd3Bac
 		group:      group,
 		key:        fmt.Sprintf("se.sunet.knubbis/fleetlock/groups/%s/v1/semaphore", group),
 		totalSlots: totalSlots,
+		staleAge:   fld,
 	}, nil
 }
 
@@ -57,7 +64,13 @@ func (eb *Etcd3Backend) RecursiveLock(ctx context.Context, id string) error {
 		// The semaphore data does not exist, create it
 		sNew := semaphore{
 			TotalSlots: eb.totalSlots,
-			Holders:    []string{id},
+			Holders: []fleetlock.Holder{
+				{
+					ID:       id,
+					LockTime: time.Now(),
+					StaleAge: eb.staleAge,
+				},
+			},
 		}
 
 		// Version 0 requires that the key does not exist
@@ -74,9 +87,11 @@ func (eb *Etcd3Backend) RecursiveLock(ctx context.Context, id string) error {
 			return fmt.Errorf("RecursiveLock: unable to marshal KV value: %w", err)
 		}
 
-		if slices.Contains(sData.Holders, id) {
-			logger.Print("already holds a lock")
-			return nil
+		for _, holder := range sData.Holders {
+			if holder.ID == id {
+				logger.Print("already holds a lock")
+				return nil
+			}
 		}
 
 		if len(sData.Holders) >= sData.TotalSlots {
@@ -84,8 +99,16 @@ func (eb *Etcd3Backend) RecursiveLock(ctx context.Context, id string) error {
 		}
 
 		// Add requested id as holder, keeping the slice sorted
-		index := sort.SearchStrings(sData.Holders, id)
-		sData.Holders = slices.Insert(sData.Holders, index, id)
+		index := sort.Search(len(sData.Holders), func(i int) bool { return sData.Holders[i].ID >= id })
+		sData.Holders = slices.Insert(
+			sData.Holders,
+			index,
+			fleetlock.Holder{
+				ID:       id,
+				LockTime: time.Now(),
+				StaleAge: eb.staleAge,
+			},
+		)
 
 		// Write updated semaphore to etcd
 		err = eb.atomicWrite(sData, s.Kvs[0].Version)
@@ -113,7 +136,7 @@ func (eb *Etcd3Backend) UnlockIfHeld(ctx context.Context, id string) error {
 		// empty state
 		sNew := semaphore{
 			TotalSlots: eb.totalSlots,
-			Holders:    []string{},
+			Holders:    []fleetlock.Holder{},
 		}
 
 		// Version 0 requires that the key does not exist
@@ -129,13 +152,20 @@ func (eb *Etcd3Backend) UnlockIfHeld(ctx context.Context, id string) error {
 			return fmt.Errorf("UnlockIfHeld: unable to marshal KV value: %w", err)
 		}
 
-		if !slices.Contains(sData.Holders, id) {
+		lockFound := false
+		for _, holder := range sData.Holders {
+			if holder.ID == id {
+				lockFound = true
+				break
+			}
+		}
+		if !lockFound {
 			logger.Printf("lock is not held by this ID")
 			return nil
 		}
 
 		// Remove requested id
-		index := sort.SearchStrings(sData.Holders, id)
+		index := sort.Search(len(sData.Holders), func(i int) bool { return sData.Holders[i].ID >= id })
 		sData.Holders = slices.Delete(sData.Holders, index, index+1)
 
 		// Write updated semaphore to etcd
@@ -148,6 +178,43 @@ func (eb *Etcd3Backend) UnlockIfHeld(ctx context.Context, id string) error {
 	}
 
 	return nil
+}
+
+func (eb *Etcd3Backend) LockStatus(ctx context.Context) (fleetlock.LockStatus, error) {
+	logger := zerolog.Ctx(ctx)
+
+	logger.Info().Msgf("LockStatus: getting status for key: '%s'", eb.key)
+
+	s, err := eb.client.Get(ctx, eb.key)
+	if err != nil {
+		return fleetlock.LockStatus{}, fmt.Errorf("LockStatus: Get key: %w", err)
+	}
+
+	switch numKvs := len(s.Kvs); numKvs {
+	case 0:
+		// The semaphore data does not exist, synthesize empty
+		// status
+		logger.Debug().Msg("LockStatus: returning empty status")
+		return fleetlock.LockStatus{
+			TotalSlots: eb.totalSlots,
+			Holders:    []fleetlock.Holder{},
+		}, nil
+	case 1:
+		// The semaphore data exists: return the information
+		sData := semaphore{}
+		err := json.Unmarshal(s.Kvs[0].Value, &sData)
+		if err != nil {
+			return fleetlock.LockStatus{}, fmt.Errorf("LockStatus: unable to marshal KV value: %w", err)
+		}
+
+		logger.Debug().Msg("LockStatus: returning status")
+		return fleetlock.LockStatus{
+			TotalSlots: eb.totalSlots,
+			Holders:    sData.Holders,
+		}, nil
+	default:
+		return fleetlock.LockStatus{}, fmt.Errorf("LockStatus: unexpected number KVs in response: %d", len(s.Kvs))
+	}
 }
 
 func (eb *Etcd3Backend) Group() string {

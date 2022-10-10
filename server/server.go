@@ -63,6 +63,7 @@ type serverConfig struct {
 	FleetLock   fleetLockConfig
 	CertMagic   certMagicConfig
 	AcmeDNS     acmeDNSConfig
+	Monitoring  monitoringConfig
 }
 
 type serverSettings struct {
@@ -84,6 +85,11 @@ type prometheusSettings struct {
 	WriteTimeout duration
 }
 
+type monitoringConfig struct {
+	Username string
+	Password string
+}
+
 type serverPermissions map[string]map[string]string
 
 type fleetLockConfig map[string]groupSettings
@@ -97,6 +103,7 @@ type etcd3config struct {
 
 type groupSettings struct {
 	TotalSlots int
+	StaleAge   duration
 }
 
 type certMagicConfig struct {
@@ -123,12 +130,7 @@ func fleetLockSendError(fle fleetlock.FleetLockError, statusCode int, w http.Res
 	if err != nil {
 		return fmt.Errorf("fleetLockSendError: failed creating FleetLock error response: %w", err)
 	}
-	w.Header().Set("content-type", "application/json; charset=utf-8")
-	w.WriteHeader(statusCode)
-	// Include newline since this JSON can be returned to curl
-	// requests and similar where the prompt gets messed up without
-	// it.
-	_, err = fmt.Fprintf(w, "%s\n", b)
+	err = writeNewlineJSON(w, b, statusCode)
 	if err != nil {
 		return fmt.Errorf("fleetLockSendError: %w", err)
 	}
@@ -250,6 +252,108 @@ func steadyStateFunc(flMap map[string]fleetlock.FleetLocker, timeout time.Durati
 	}
 }
 
+type lockStatusData struct {
+	Groups map[string]fleetlock.LockStatus `json:"groups"`
+}
+
+// handler called when clients request lock status
+func lockStatusFunc(flMap map[string]fleetlock.FleetLocker, timeout time.Duration) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		logger := hlog.FromRequest(r)
+
+		lsd := lockStatusData{
+			Groups: map[string]fleetlock.LockStatus{},
+		}
+
+		lockerCtx, lockerCancel := context.WithTimeout(r.Context(), timeout)
+		defer lockerCancel()
+
+		for group, locker := range flMap {
+			ls, err := locker.LockStatus(lockerCtx)
+			if err != nil {
+				logger.Err(err).Msgf("unable to get LockStatus for group '%s'", group)
+				http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+				return
+			}
+			lsd.Groups[group] = ls
+		}
+
+		b, err := json.Marshal(lsd)
+		if err != nil {
+			logger.Err(err).Msg("unable to marshal locksStatusData")
+			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+			return
+		}
+
+		err = writeNewlineJSON(w, b, http.StatusOK)
+		if err != nil {
+			logger.Err(err).Msg("failed writing lockStatusData")
+			return
+		}
+	}
+}
+
+type staleLocksData struct {
+	StaleLocks bool                `json:"stale_locks"`
+	Groups     map[string][]string `json:"groups"`
+}
+
+func staleLocksFunc(flMap map[string]fleetlock.FleetLocker, timeout time.Duration, flc fleetLockConfig) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		logger := hlog.FromRequest(r)
+
+		sld := staleLocksData{
+			Groups: map[string][]string{},
+		}
+
+		lockerCtx, lockerCancel := context.WithTimeout(r.Context(), timeout)
+		defer lockerCancel()
+
+		for group, locker := range flMap {
+			ls, err := locker.LockStatus(lockerCtx)
+			if err != nil {
+				logger.Err(err).Msgf("unable to get LockStatus for group '%s'", group)
+				http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+				return
+			}
+			for _, holder := range ls.Holders {
+				//if time.Since(holder.LockTime) > flc[group].StaleAge.Duration {
+				if time.Since(holder.LockTime) > holder.StaleAge.Duration {
+					sld.StaleLocks = true
+					sld.Groups[group] = append(sld.Groups[group], holder.ID)
+				}
+			}
+		}
+
+		b, err := json.Marshal(sld)
+		if err != nil {
+			logger.Err(err).Msg("unable to marshal staleLocksData")
+			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+			return
+		}
+
+		err = writeNewlineJSON(w, b, http.StatusOK)
+		if err != nil {
+			logger.Err(err).Msg("failed writing staleLocksData")
+			return
+		}
+	}
+}
+
+func writeNewlineJSON(w http.ResponseWriter, b []byte, statusCode int) error {
+	w.Header().Set("content-type", "application/json; charset=utf-8")
+	w.WriteHeader(statusCode)
+	// Include newline since this JSON can be returned to curl
+	// requests and similar where the prompt gets messed up without
+	// it.
+	_, err := fmt.Fprintf(w, "%s\n", b)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
 func ratelimitMiddleware(conf serverConfig, rl *rateLimiter) alice.Constructor {
 	return func(h http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -330,10 +434,12 @@ func ratelimitCleaner(logger zerolog.Logger, rl *rateLimiter) {
 	}
 }
 
-func basicAuthMiddleware(flattenedPerms map[string][]byte) alice.Constructor {
+func flBasicAuthMiddleware(flattenedPerms map[string][]byte) alice.Constructor {
 	return func(h http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			logger := hlog.FromRequest(r)
+
+			realm := "fleetlock"
 
 			// Since we pair passwords with FleetLock
 			// group + ID we have no need for the username,
@@ -341,7 +447,7 @@ func basicAuthMiddleware(flattenedPerms map[string][]byte) alice.Constructor {
 			_, password, ok := r.BasicAuth()
 			if !ok {
 				logger.Info().Msg("invalid or missing Authorization header")
-				sendUnauthorizedResponse(w)
+				sendUnauthorizedResponse(w, realm)
 				return
 			}
 
@@ -390,13 +496,47 @@ func basicAuthMiddleware(flattenedPerms map[string][]byte) alice.Constructor {
 			}
 
 			logger.Info().Msg("invalid credentials in Authorization header")
-			sendUnauthorizedResponse(w)
+			sendUnauthorizedResponse(w, realm)
 		})
 	}
 }
 
-func sendUnauthorizedResponse(w http.ResponseWriter) {
-	w.Header().Set("WWW-Authenticate", `Basic realm="restricted", charset="utf-8"`)
+func monitorBasicAuthMiddleware(conf monitoringConfig) alice.Constructor {
+	// Calculate hashes for strings in config at startup
+	expectedUsernameHash := sha256.Sum256([]byte(conf.Username))
+	expectedPasswordHash := sha256.Sum256([]byte(conf.Password))
+	return func(h http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			logger := hlog.FromRequest(r)
+
+			realm := "monitoring"
+
+			username, password, ok := r.BasicAuth()
+			if !ok {
+				logger.Info().Msg("invalid or missing Authorization header")
+				sendUnauthorizedResponse(w, realm)
+				return
+			}
+
+			usernameHash := sha256.Sum256([]byte(username))
+			passwordHash := sha256.Sum256([]byte(password))
+			usernameMatch := (subtle.ConstantTimeCompare(usernameHash[:], expectedUsernameHash[:]) == 1)
+			passwordMatch := (subtle.ConstantTimeCompare(passwordHash[:], expectedPasswordHash[:]) == 1)
+
+			if usernameMatch && passwordMatch {
+				logger.Info().Msg("successful authentication")
+				h.ServeHTTP(w, r)
+				return
+			}
+
+			logger.Info().Msg("invalid credentials in Authorization header")
+			sendUnauthorizedResponse(w, realm)
+		})
+	}
+}
+
+func sendUnauthorizedResponse(w http.ResponseWriter, realm string) {
+	w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Basic realm="%s", charset="utf-8"`, realm))
 	http.Error(w, "Unauthorized", http.StatusUnauthorized)
 }
 
@@ -581,7 +721,7 @@ func newConfig(configFile string) (serverConfig, error) {
 // Flatten permissions from "group" => "id" => "password" to "group-id"
 // => "[]byte(sha256(password))" for easier lookup, and also hash the
 // password for later constant time comparision
-func flattenPermissions(confPerms serverPermissions) map[string][]byte {
+func flattenFleetLockPermissions(confPerms serverPermissions) map[string][]byte {
 
 	flattenedPerms := map[string][]byte{}
 
@@ -627,7 +767,7 @@ func Run(configPath string) {
 		logger.Fatal().Err(err).Msg("unable to create server config")
 	}
 
-	flattenedPerms := flattenPermissions(conf.Permissions)
+	flattenedPerms := flattenFleetLockPermissions(conf.Permissions)
 
 	router := httprouter.New()
 
@@ -636,9 +776,6 @@ func Run(configPath string) {
 		DialTimeout: 5 * time.Second,
 		Username:    conf.Etcd3.Username,
 		Password:    conf.Etcd3.Password,
-		//TLS: &tls.Config{
-		//	InsecureSkipVerify: conf.Etcd3.InsecureSkipVerify,
-		//},
 	}
 
 	etcd3Config.TLS = &tls.Config{InsecureSkipVerify: conf.Etcd3.InsecureSkipVerify} // #nosec this is configurable for testing
@@ -655,7 +792,7 @@ func Run(configPath string) {
 
 	for group, settings := range conf.FleetLock {
 		logger.Info().Msgf("configuring group '%s' with total slots: %d", group, settings.TotalSlots)
-		el, err := etcd3.NewLocker(etcd3Client, group, settings.TotalSlots)
+		el, err := etcd3.NewLocker(etcd3Client, group, settings.TotalSlots, settings.StaleAge.Duration)
 		if err != nil {
 			logger.Fatal().
 				Err(err).
@@ -675,7 +812,9 @@ func Run(configPath string) {
 	// limiters
 	go ratelimitCleaner(logger, limiter)
 
-	commonMiddlewares := []alice.Constructor{
+	// We always want to call these middlwares first, so we get got
+	// logging for the requests
+	hlogMiddlewares := []alice.Constructor{
 		// hlog handlers based on example from https://github.com/rs/zerolog#integration-with-nethttp
 		hlog.NewHandler(logger),
 		hlog.AccessHandler(func(r *http.Request, status, size int, duration time.Duration) {
@@ -691,10 +830,23 @@ func Run(configPath string) {
 		hlog.UserAgentHandler("user_agent"),
 		hlog.RefererHandler("referer"),
 		hlog.RequestIDHandler("req_id", "Request-Id"),
-		fleetLockValidatorMiddleware(),
-		ratelimitMiddleware(conf, limiter),
-		basicAuthMiddleware(flattenedPerms),
 	}
+
+	// Use the same middleware function for ratelimiting all endpoints
+	ratelimitingMiddleware := ratelimitMiddleware(conf, limiter)
+
+	// Create middleware chain used for the FleetLock endpoints.
+	fleetLockMiddlewares := []alice.Constructor{}
+	fleetLockMiddlewares = append(fleetLockMiddlewares, hlogMiddlewares...)
+	fleetLockMiddlewares = append(fleetLockMiddlewares, ratelimitingMiddleware)
+	fleetLockMiddlewares = append(fleetLockMiddlewares, fleetLockValidatorMiddleware())
+	fleetLockMiddlewares = append(fleetLockMiddlewares, flBasicAuthMiddleware(flattenedPerms))
+
+	// Create middleware chain used for monitoring endpoints
+	monitoringMiddlewares := []alice.Constructor{}
+	monitoringMiddlewares = append(monitoringMiddlewares, hlogMiddlewares...)
+	monitoringMiddlewares = append(monitoringMiddlewares, ratelimitingMiddleware)
+	monitoringMiddlewares = append(monitoringMiddlewares, monitorBasicAuthMiddleware(conf.Monitoring))
 
 	// Timeout when aquiring or releasing a lock
 	timeout, err := time.ParseDuration("10s")
@@ -704,11 +856,16 @@ func Run(configPath string) {
 			Msg("cannot parse duration")
 	}
 
-	preRebootChain := alice.New(commonMiddlewares...).Then(preRebootFunc(flMap, timeout))
-	steadyStateChain := alice.New(commonMiddlewares...).Then(steadyStateFunc(flMap, timeout))
+	preRebootChain := alice.New(fleetLockMiddlewares...).Then(preRebootFunc(flMap, timeout))
+	steadyStateChain := alice.New(fleetLockMiddlewares...).Then(steadyStateFunc(flMap, timeout))
+
+	lockStatusChain := alice.New(monitoringMiddlewares...).Then(lockStatusFunc(flMap, timeout))
+	staleLocksChain := alice.New(monitoringMiddlewares...).Then(staleLocksFunc(flMap, timeout, conf.FleetLock))
 
 	router.Handler("POST", "/v1/pre-reboot", preRebootChain)
 	router.Handler("POST", "/v1/steady-state", steadyStateChain)
+	router.Handler("GET", "/lock-status", lockStatusChain)
+	router.Handler("GET", "/stale-locks", staleLocksChain)
 
 	// https://datatracker.ietf.org/doc/rfc9106/
 	// Nonce S, which is a salt for password hashing applications.
