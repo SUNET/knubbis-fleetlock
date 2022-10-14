@@ -36,7 +36,7 @@ import (
 	"golang.org/x/time/rate"
 )
 
-// version set at build time with -ldflags "-X main.version=v0.0.1"
+// version set at build time with -ldflags="-X github.com/SUNET/knubbis-fleetlock/server.version=v0.0.1"
 var version = "unspecified"
 
 // https://pkg.go.dev/github.com/burntSushi/toml#readme-examples
