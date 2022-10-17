@@ -30,11 +30,11 @@ type FleetLockError struct {
 // The HTTP body format expected for FleetLock requests
 // https://coreos.github.io/zincati/development/fleetlock/protocol/#body
 type FleetLockBody struct {
-	ClientParams clientParams `json:"client_params"`
+	ClientParams ClientParams `json:"client_params"`
 }
 
 // https://coreos.github.io/zincati/development/fleetlock/protocol/#body
-type clientParams struct {
+type ClientParams struct {
 	ID    string `json:"id"`
 	Group string `json:"group"`
 }

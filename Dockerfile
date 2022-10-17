@@ -6,6 +6,7 @@ WORKDIR /go/src/knubbis-fleetlock
 COPY . .
 
 RUN go mod download
+RUN go test -race ./...
 RUN CGO_ENABLED=0 go build -ldflags="-X github.com/SUNET/knubbis-fleetlock/server.version=$VERSION" -o /go/bin/knubbis-fleetlock
 
 FROM gcr.io/distroless/static-debian11

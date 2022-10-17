@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/netip"
@@ -419,7 +420,7 @@ func flBasicAuthMiddleware(flattenedPerms map[string][]byte) alice.Constructor {
 			_, password, ok := r.BasicAuth()
 			if !ok {
 				logger.Info().Msg("invalid or missing Authorization header")
-				sendUnauthorizedResponse(w, realm)
+				sendUnauthorizedResponse(logger, w, realm, true)
 				return
 			}
 
@@ -468,7 +469,7 @@ func flBasicAuthMiddleware(flattenedPerms map[string][]byte) alice.Constructor {
 			}
 
 			logger.Info().Msg("invalid credentials in Authorization header")
-			sendUnauthorizedResponse(w, realm)
+			sendUnauthorizedResponse(logger, w, realm, true)
 		})
 	}
 }
@@ -486,7 +487,7 @@ func monitorBasicAuthMiddleware(conf monitoringConfig) alice.Constructor {
 			username, password, ok := r.BasicAuth()
 			if !ok {
 				logger.Info().Msg("invalid or missing Authorization header")
-				sendUnauthorizedResponse(w, realm)
+				sendUnauthorizedResponse(logger, w, realm, false)
 				return
 			}
 
@@ -502,14 +503,26 @@ func monitorBasicAuthMiddleware(conf monitoringConfig) alice.Constructor {
 			}
 
 			logger.Info().Msg("invalid credentials in Authorization header")
-			sendUnauthorizedResponse(w, realm)
+			sendUnauthorizedResponse(logger, w, realm, false)
 		})
 	}
 }
 
-func sendUnauthorizedResponse(w http.ResponseWriter, realm string) {
+func sendUnauthorizedResponse(logger *zerolog.Logger, w http.ResponseWriter, realm string, flEndpoint bool) {
+
 	w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Basic realm="%s", charset="utf-8"`, realm))
-	http.Error(w, "Unauthorized", http.StatusUnauthorized)
+
+	// Return FleetLock formatted JSON if this authentication error
+	// was made on a FleetLock endpoint
+	if flEndpoint {
+		err := fleetLockSendError("unauthorized_request", "you need to authenticate to a take lock", http.StatusUnauthorized, w)
+		if err != nil {
+			logger.Err(err).Msg("failed sending FleetLock error to client")
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	} else {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+	}
 }
 
 // key is used to get unique keys for use in the net/http context that
@@ -552,7 +565,24 @@ func fleetLockValidatorMiddleware() alice.Constructor {
 
 			err := json.NewDecoder(r.Body).Decode(&fld)
 			if err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
+				if err == io.EOF {
+					logger.Error().Msg("FleetLock body is empty")
+					err := fleetLockSendError("empty_fleetlock_body", "body is empty", http.StatusBadRequest, w)
+					if err != nil {
+						logger.Err(err).Msg("failed sending empty body error to client")
+						w.WriteHeader(http.StatusInternalServerError)
+						return
+					}
+				} else {
+					logger.Err(err).Msg("failed decoding FleetLock body")
+					err := fleetLockSendError("bad_fleetlock_body", "body must contain valid data", http.StatusBadRequest, w)
+					if err != nil {
+						logger.Err(err).Msg("failed sending invalid body error to client")
+						w.WriteHeader(http.StatusInternalServerError)
+						return
+					}
+					http.Error(w, err.Error(), http.StatusBadRequest)
+				}
 				return
 			}
 
@@ -660,6 +690,77 @@ func (zew *zerologErrorWriter) Write(p []byte) (n int, err error) {
 	return len(p), nil
 }
 
+func defaultServerConfig() serverConfig {
+	return serverConfig{
+		Server: serverSettings{
+			Listen:  "127.0.0.1:8443",
+			Backend: "etcd3",
+			ReadTimeout: duration{
+				Duration: time.Duration(10 * time.Second),
+			},
+			WriteTimeout: duration{
+				Duration: time.Duration(10 * time.Second),
+			},
+			ShutdownDelay: duration{
+				Duration: time.Duration(5 * time.Second),
+			},
+		},
+		Ratelimit: ratelimitSettings{
+			Rate:  1,
+			Burst: 3,
+		},
+		Monitoring: monitoringConfig{
+			Username: "monitor",
+			Password: "changeme",
+		},
+		Prometheus: prometheusSettings{
+			Listen: "127.0.0.1:2222",
+			ReadTimeout: duration{
+				Duration: time.Duration(10 * time.Second),
+			},
+			WriteTimeout: duration{
+				Duration: time.Duration(10 * time.Second),
+			},
+		},
+		Permissions: serverPermissions{
+			"workers": map[string]string{
+				"*": "changeme",
+			},
+		},
+		Etcd3: etcd3config{
+			Endpoints:          []string{"https://localhost:2379"},
+			Username:           "knubbis-fleetlock",
+			Password:           "changeme",
+			InsecureSkipVerify: false,
+		},
+		FleetLock: fleetLockConfig{
+			"workers": groupSettings{
+				TotalSlots: 1,
+				StaleAge: duration{
+					Duration: time.Second * 3600,
+				},
+			},
+		},
+		CertMagic: certMagicConfig{
+			Salt:            "changeme",
+			Password:        "changeme",
+			Etcd3Path:       "com.example.fleetlock/certmagic",
+			LetsEncryptProd: false,
+			Email:           "someone@example.com",
+			Domains:         []string{"fleetlock.example.com"},
+		},
+		AcmeDNS: acmeDNSConfig{
+			"fleetlock.example.com": acmeDNSDomainSettings{
+				Username:   "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+				Password:   "changeme",
+				Subdomain:  "eeeeeeee-dddd-cccc-bbbb-aaaaaaaaaaaa",
+				FullDomain: "eeeeeeee-dddd-cccc-bbbb-aaaaaaaaaaaa.acme-dns.example.com",
+				ServerURL:  "https://acme-dns.example.com",
+			},
+		},
+	}
+}
+
 func newConfig(configFile string) (serverConfig, error) {
 
 	conf := serverConfig{}
@@ -694,23 +795,40 @@ func flattenFleetLockPermissions(confPerms serverPermissions) map[string][]byte 
 	return flattenedPerms
 }
 
-func Run(configPath string) {
+func newLogger(service, hostname string) zerolog.Logger {
+	return zerolog.New(os.Stderr).With().
+		Timestamp().
+		Str("service", service).
+		Str("hostname", hostname).
+		Str("server_version", version).
+		Str("go_version", runtime.Version()).
+		Logger()
+}
 
-	host, err := os.Hostname()
+func newIPLimiter() *rateLimiter {
+	return &rateLimiter{
+		ipLimiterMap: map[netip.Addr]*ipLimiter{},
+	}
+}
+
+func Run(configPath string) {
+	service := "knubbis-fleetlock"
+
+	hostname, err := os.Hostname()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "unable to get hostname, can not setup logging")
 		os.Exit(1)
 	}
 
-	service := "knubbis-fleetlock"
+	logger := newLogger(service, hostname)
 
-	logger := zerolog.New(os.Stderr).With().
-		Timestamp().
-		Str("service", service).
-		Str("host", host).
-		Str("server_version", version).
-		Str("go_version", runtime.Version()).
-		Logger()
+	//logger := zerolog.New(os.Stderr).With().
+	//	Timestamp().
+	//	Str("service", service).
+	//	Str("host", host).
+	//	Str("server_version", version).
+	//	Str("go_version", runtime.Version()).
+	//	Logger()
 
 	logger.Info().Msgf("starting server")
 
@@ -721,42 +839,44 @@ func Run(configPath string) {
 
 	flattenedPerms := flattenFleetLockPermissions(conf.Permissions)
 
-	router := httprouter.New()
+	//etcd3Config := clientv3.Config{
+	//	Endpoints:   conf.Etcd3.Endpoints,
+	//	DialTimeout: 5 * time.Second,
+	//	Username:    conf.Etcd3.Username,
+	//	Password:    conf.Etcd3.Password,
+	//}
 
-	etcd3Config := clientv3.Config{
-		Endpoints:   conf.Etcd3.Endpoints,
-		DialTimeout: 5 * time.Second,
-		Username:    conf.Etcd3.Username,
-		Password:    conf.Etcd3.Password,
-	}
+	//etcd3Config.TLS = &tls.Config{InsecureSkipVerify: conf.Etcd3.InsecureSkipVerify} // #nosec this is configurable for testing
 
-	etcd3Config.TLS = &tls.Config{InsecureSkipVerify: conf.Etcd3.InsecureSkipVerify} // #nosec this is configurable for testing
+	etcd3TLSConfig := &tls.Config{InsecureSkipVerify: conf.Etcd3.InsecureSkipVerify} // #nosec this is configurable for testing
 
-	etcd3Client, err := clientv3.New(etcd3Config)
+	etcd3Client, err := newEtcd3Client(conf.Etcd3, etcd3TLSConfig)
 	if err != nil {
 		logger.Fatal().
 			Err(err).
-			Str("service", service).
 			Msg("cannot create etcd3 client")
 	}
 
-	flMap := map[string]fleetlock.FleetLocker{}
-
-	for group, settings := range conf.FleetLock {
-		logger.Info().Msgf("configuring group '%s' with total slots: %d", group, settings.TotalSlots)
-		el, err := etcd3.NewLocker(etcd3Client, group, settings.TotalSlots, settings.StaleAge.Duration)
-		if err != nil {
-			logger.Fatal().
-				Err(err).
-				Str("service", service).
-				Msg("cannot create etcd3 locker")
-		}
-		flMap[group] = el
+	flMap, err := newEtcd3FleetLockMap(etcd3Client, conf.FleetLock, logger)
+	if err != nil {
+		logger.Fatal().
+			Err(err).
+			Msg("cannot create etcd3 locker")
 	}
+	//flMap := map[string]fleetlock.FleetLocker{}
 
-	limiter := &rateLimiter{
-		ipLimiterMap: map[netip.Addr]*ipLimiter{},
-	}
+	//for group, settings := range conf.FleetLock {
+	//	logger.Info().Msgf("configuring group '%s' with total slots: %d", group, settings.TotalSlots)
+	//	el, err := etcd3.NewLocker(etcd3Client, group, settings.TotalSlots, settings.StaleAge.Duration)
+	//	if err != nil {
+	//		logger.Fatal().
+	//			Err(err).
+	//			Msg("cannot create etcd3 locker")
+	//	}
+	//	flMap[group] = el
+	//}
+
+	limiter := newIPLimiter()
 
 	logger.Info().Msgf("rate limiter rate: %.2f, burst: %d", conf.Ratelimit.Rate, conf.Ratelimit.Burst)
 
@@ -764,41 +884,18 @@ func Run(configPath string) {
 	// limiters
 	go ratelimitCleaner(logger, limiter)
 
-	// We always want to call these middlwares first, so we get got
+	// We always want to call these middlwares first, so we get
 	// logging for the requests
-	hlogMiddlewares := []alice.Constructor{
-		// hlog handlers based on example from https://github.com/rs/zerolog#integration-with-nethttp
-		hlog.NewHandler(logger),
-		hlog.AccessHandler(func(r *http.Request, status, size int, duration time.Duration) {
-			hlog.FromRequest(r).Info().
-				Str("method", r.Method).
-				Stringer("url", r.URL).
-				Int("status", status).
-				Int("size", size).
-				Dur("duration", duration).
-				Msg("")
-		}),
-		hlog.RemoteAddrHandler("ip"),
-		hlog.UserAgentHandler("user_agent"),
-		hlog.RefererHandler("referer"),
-		hlog.RequestIDHandler("req_id", "Request-Id"),
-	}
+	hlogMiddlewares := newHlogMiddlewareChain(logger)
 
 	// Use the same middleware function for ratelimiting all endpoints
 	ratelimitingMiddleware := ratelimitMiddleware(conf, limiter)
 
 	// Create middleware chain used for the FleetLock endpoints.
-	fleetLockMiddlewares := []alice.Constructor{}
-	fleetLockMiddlewares = append(fleetLockMiddlewares, hlogMiddlewares...)
-	fleetLockMiddlewares = append(fleetLockMiddlewares, ratelimitingMiddleware)
-	fleetLockMiddlewares = append(fleetLockMiddlewares, fleetLockValidatorMiddleware())
-	fleetLockMiddlewares = append(fleetLockMiddlewares, flBasicAuthMiddleware(flattenedPerms))
+	fleetLockMiddlewares := newFleetLockMiddlewareChain(hlogMiddlewares, ratelimitingMiddleware, flattenedPerms)
 
 	// Create middleware chain used for monitoring endpoints
-	monitoringMiddlewares := []alice.Constructor{}
-	monitoringMiddlewares = append(monitoringMiddlewares, hlogMiddlewares...)
-	monitoringMiddlewares = append(monitoringMiddlewares, ratelimitingMiddleware)
-	monitoringMiddlewares = append(monitoringMiddlewares, monitorBasicAuthMiddleware(conf.Monitoring))
+	monitoringMiddlewares := newMonitoringMiddlewareChain(hlogMiddlewares, ratelimitingMiddleware, conf.Monitoring)
 
 	// Timeout when aquiring or releasing a lock
 	timeout, err := time.ParseDuration("10s")
@@ -814,10 +911,12 @@ func Run(configPath string) {
 	lockStatusChain := alice.New(monitoringMiddlewares...).Then(lockStatusFunc(flMap, timeout))
 	staleLocksChain := alice.New(monitoringMiddlewares...).Then(staleLocksFunc(flMap, timeout, conf.FleetLock))
 
-	router.Handler("POST", "/v1/pre-reboot", preRebootChain)
-	router.Handler("POST", "/v1/steady-state", steadyStateChain)
-	router.Handler("GET", "/lock-status", lockStatusChain)
-	router.Handler("GET", "/stale-locks", staleLocksChain)
+	router := newRouter(preRebootChain, steadyStateChain, lockStatusChain, staleLocksChain)
+
+	//router.Handler("POST", "/v1/pre-reboot", preRebootChain)
+	//router.Handler("POST", "/v1/steady-state", steadyStateChain)
+	//router.Handler("GET", "/lock-status", lockStatusChain)
+	//router.Handler("GET", "/stale-locks", staleLocksChain)
 
 	// https://datatracker.ietf.org/doc/rfc9106/
 	// Nonce S, which is a salt for password hashing applications.
@@ -899,7 +998,6 @@ func Run(configPath string) {
 	if err != nil {
 		logger.Fatal().
 			Err(err).
-			Str("service", service).
 			Msgf("cannot create tlsconfig %s", service)
 	}
 
@@ -958,4 +1056,91 @@ func Run(configPath string) {
 	// ErrServerClosed when Shutdown is called. Make sure the
 	// program doesn't exit until Shutdown() has finished:
 	<-idleConnsClosed
+}
+
+func newHlogMiddlewareChain(logger zerolog.Logger) []alice.Constructor {
+	hlogMiddlewares := []alice.Constructor{
+		// hlog handlers based on example from https://github.com/rs/zerolog#integration-with-nethttp
+		hlog.NewHandler(logger),
+		hlog.AccessHandler(func(r *http.Request, status, size int, duration time.Duration) {
+			hlog.FromRequest(r).Info().
+				Str("method", r.Method).
+				Stringer("url", r.URL).
+				Int("status", status).
+				Int("size", size).
+				Dur("duration", duration).
+				Msg("")
+		}),
+		hlog.RemoteAddrHandler("ip"),
+		hlog.UserAgentHandler("user_agent"),
+		hlog.RefererHandler("referer"),
+		hlog.RequestIDHandler("req_id", "Request-Id"),
+	}
+
+	return hlogMiddlewares
+}
+
+func newFleetLockMiddlewareChain(hlogMiddlewares []alice.Constructor, ratelimitingMiddleware alice.Constructor, flattenedPerms map[string][]byte) []alice.Constructor {
+	// Create middleware chain used for the FleetLock endpoints.
+	fleetLockMiddlewares := []alice.Constructor{}
+	fleetLockMiddlewares = append(fleetLockMiddlewares, hlogMiddlewares...)
+	fleetLockMiddlewares = append(fleetLockMiddlewares, ratelimitingMiddleware)
+	fleetLockMiddlewares = append(fleetLockMiddlewares, fleetLockValidatorMiddleware())
+	fleetLockMiddlewares = append(fleetLockMiddlewares, flBasicAuthMiddleware(flattenedPerms))
+
+	return fleetLockMiddlewares
+}
+
+func newMonitoringMiddlewareChain(hlogMiddlewares []alice.Constructor, ratelimitingMiddleware alice.Constructor, mc monitoringConfig) []alice.Constructor {
+	monitoringMiddlewares := []alice.Constructor{}
+	monitoringMiddlewares = append(monitoringMiddlewares, hlogMiddlewares...)
+	monitoringMiddlewares = append(monitoringMiddlewares, ratelimitingMiddleware)
+	monitoringMiddlewares = append(monitoringMiddlewares, monitorBasicAuthMiddleware(mc))
+
+	return monitoringMiddlewares
+}
+
+func newEtcd3FleetLockMap(etcd3Client *clientv3.Client, flc fleetLockConfig, logger zerolog.Logger) (map[string]fleetlock.FleetLocker, error) {
+	flMap := map[string]fleetlock.FleetLocker{}
+
+	for group, settings := range flc {
+		logger.Info().Msgf("configuring group '%s' with total slots: %d", group, settings.TotalSlots)
+		el, err := etcd3.NewLocker(etcd3Client, group, settings.TotalSlots, settings.StaleAge.Duration)
+		if err != nil {
+			return nil, fmt.Errorf("newFleetLockMap: %w", err)
+		}
+		flMap[group] = el
+	}
+
+	return flMap, nil
+}
+
+func newEtcd3Client(conf etcd3config, tlsConfig *tls.Config) (*clientv3.Client, error) {
+	etcd3Config := clientv3.Config{
+		Endpoints:   conf.Endpoints,
+		DialTimeout: 5 * time.Second,
+		Username:    conf.Username,
+		Password:    conf.Password,
+	}
+
+	//etcd3Config.TLS = &tls.Config{InsecureSkipVerify: conf.InsecureSkipVerify} // #nosec this is configurable for testing
+	etcd3Config.TLS = tlsConfig
+
+	etcd3Client, err := clientv3.New(etcd3Config)
+	if err != nil {
+		return nil, err
+	}
+
+	return etcd3Client, nil
+}
+
+func newRouter(preRebootChain, steadyStateChain, lockStatusChain, staleLocksChain http.Handler) *httprouter.Router {
+	router := httprouter.New()
+
+	router.Handler("POST", "/v1/pre-reboot", preRebootChain)
+	router.Handler("POST", "/v1/steady-state", steadyStateChain)
+	router.Handler("GET", "/lock-status", lockStatusChain)
+	router.Handler("GET", "/stale-locks", staleLocksChain)
+
+	return router
 }
