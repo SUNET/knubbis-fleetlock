@@ -95,7 +95,9 @@ func (eb *Etcd3Backend) RecursiveLock(ctx context.Context, id string) error {
 		}
 
 		if len(sData.Holders) >= sData.TotalSlots {
-			return fmt.Errorf("RecursiveLock: all %d slots are currently taken", sData.TotalSlots)
+			return &fleetlock.RecursiveLockError{
+				ClientMsg: fmt.Sprintf("all %d slots are currently taken", sData.TotalSlots),
+			}
 		}
 
 		// Add requested id as holder, keeping the slice sorted

@@ -80,3 +80,14 @@ func (d *Duration) UnmarshalJSON(b []byte) error {
 func (d Duration) MarshalJSON() ([]byte, error) {
 	return json.Marshal(d.String())
 }
+
+// Type that satisfies the "error" interface. If the caller gets this
+// type of error it can trust the message in clientMsg is safe to send to the
+// client as-is in a FleetLockError value.
+type RecursiveLockError struct {
+	ClientMsg string
+}
+
+func (le *RecursiveLockError) Error() string {
+	return le.ClientMsg
+}
