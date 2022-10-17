@@ -149,7 +149,7 @@ func preRebootFunc(flMap map[string]fleetlock.FleetLocker, timeout time.Duration
 	return func(w http.ResponseWriter, r *http.Request) {
 		logger := hlog.FromRequest(r)
 		logger.UpdateContext(func(c zerolog.Context) zerolog.Context {
-			return c.Str("fleetlock_op", "reqursivelock")
+			return c.Str("fleetlock_op", "recursivelock")
 		})
 
 		// Fetch FleetLock data validated in middleware
