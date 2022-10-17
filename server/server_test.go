@@ -65,6 +65,9 @@ func TestPreRebootHandler(t *testing.T) {
 		t.Errorf("unable to JSON marshal FleetLockBody: %s", err)
 	}
 
+	preRebootURL := "http://example.com/v1/pre-reboot"
+	steadyStateURL := "http://example.com/v1/steady-state"
+
 	tests := []struct {
 		name                 string
 		flMap                map[string]fleetlock.FleetLocker
@@ -75,6 +78,7 @@ func TestPreRebootHandler(t *testing.T) {
 		expectedStatusCode   int
 		expectedContentType  string
 		expectedBody         []byte
+		url                  string
 	}{
 		{
 			name: "prereboot-lock-successful",
@@ -94,6 +98,7 @@ func TestPreRebootHandler(t *testing.T) {
 			fleetLockHeaderValue: "true",
 			authPassword:         "changeme",
 			expectedStatusCode:   http.StatusOK,
+			url:                  preRebootURL,
 		},
 		{
 			name: "prereboot-lock-missing-header",
@@ -111,6 +116,7 @@ func TestPreRebootHandler(t *testing.T) {
 			flBody:              flBodyBytes,
 			expectedStatusCode:  http.StatusBadRequest,
 			expectedContentType: "application/json; charset=utf-8",
+			url:                 preRebootURL,
 		},
 		{
 			name: "prereboot-lock-empty-body",
@@ -131,6 +137,7 @@ func TestPreRebootHandler(t *testing.T) {
 			authPassword:         "changeme",
 			expectedStatusCode:   http.StatusBadRequest,
 			expectedContentType:  "application/json; charset=utf-8",
+			url:                  preRebootURL,
 		},
 		{
 			name: "prereboot-lock-missing-authentication",
@@ -150,6 +157,86 @@ func TestPreRebootHandler(t *testing.T) {
 			fleetLockHeaderValue: "true",
 			expectedStatusCode:   http.StatusUnauthorized,
 			expectedContentType:  "application/json; charset=utf-8",
+			url:                  preRebootURL,
+		},
+		{
+			name: "steadystate-lock-successful",
+			flMap: map[string]fleetlock.FleetLocker{
+				"workers": testLocker{
+					group:            "workers",
+					recursiveLockErr: nil,
+					unlockIfHeldErr:  nil,
+					lockStatus: fleetlock.LockStatus{
+						TotalSlots: 1,
+						Holders:    []fleetlock.Holder{},
+					},
+				},
+			},
+			flBody:               flBodyBytes,
+			fleetLockHeaderName:  "fleet-lock-protocol",
+			fleetLockHeaderValue: "true",
+			authPassword:         "changeme",
+			expectedStatusCode:   http.StatusOK,
+			url:                  steadyStateURL,
+		},
+		{
+			name: "steadystate-lock-missing-header",
+			flMap: map[string]fleetlock.FleetLocker{
+				"workers": testLocker{
+					group:            "workers",
+					recursiveLockErr: nil,
+					unlockIfHeldErr:  nil,
+					lockStatus: fleetlock.LockStatus{
+						TotalSlots: 1,
+						Holders:    []fleetlock.Holder{},
+					},
+				},
+			},
+			flBody:              flBodyBytes,
+			expectedStatusCode:  http.StatusBadRequest,
+			expectedContentType: "application/json; charset=utf-8",
+			url:                 steadyStateURL,
+		},
+		{
+			name: "steadystate-lock-empty-body",
+			flMap: map[string]fleetlock.FleetLocker{
+				"workers": testLocker{
+					group:            "workers",
+					recursiveLockErr: nil,
+					unlockIfHeldErr:  nil,
+					lockStatus: fleetlock.LockStatus{
+						TotalSlots: 1,
+						Holders:    []fleetlock.Holder{},
+					},
+				},
+			},
+			flBody:               nil,
+			fleetLockHeaderName:  "fleet-lock-protocol",
+			fleetLockHeaderValue: "true",
+			authPassword:         "changeme",
+			expectedStatusCode:   http.StatusBadRequest,
+			expectedContentType:  "application/json; charset=utf-8",
+			url:                  steadyStateURL,
+		},
+		{
+			name: "steadystate-lock-missing-authentication",
+			flMap: map[string]fleetlock.FleetLocker{
+				"workers": testLocker{
+					group:            "workers",
+					recursiveLockErr: nil,
+					unlockIfHeldErr:  nil,
+					lockStatus: fleetlock.LockStatus{
+						TotalSlots: 1,
+						Holders:    []fleetlock.Holder{},
+					},
+				},
+			},
+			flBody:               flBodyBytes,
+			fleetLockHeaderName:  "fleet-lock-protocol",
+			fleetLockHeaderValue: "true",
+			expectedStatusCode:   http.StatusUnauthorized,
+			expectedContentType:  "application/json; charset=utf-8",
+			url:                  steadyStateURL,
 		},
 	}
 
@@ -171,8 +258,9 @@ func TestPreRebootHandler(t *testing.T) {
 	for _, test := range tests {
 
 		preRebootChain := alice.New(fleetLockMiddlewares...).Then(preRebootFunc(test.flMap, timeout))
+		steadyStateChain := alice.New(fleetLockMiddlewares...).Then(steadyStateFunc(test.flMap, timeout))
 		bodyReader := bytes.NewReader(test.flBody)
-		req := httptest.NewRequest("GET", "http://example.com/v1/pre-reboot", bodyReader)
+		req := httptest.NewRequest("GET", test.url, bodyReader)
 		if test.fleetLockHeaderName != "" {
 			req.Header.Add(test.fleetLockHeaderName, test.fleetLockHeaderValue)
 		}
@@ -184,7 +272,15 @@ func TestPreRebootHandler(t *testing.T) {
 		}
 
 		w := httptest.NewRecorder()
-		preRebootChain.ServeHTTP(w, req)
+
+		switch url := test.url; url {
+		case preRebootURL:
+			preRebootChain.ServeHTTP(w, req)
+		case steadyStateURL:
+			steadyStateChain.ServeHTTP(w, req)
+		default:
+			t.Fatalf("unknown URL: %s", url)
+		}
 
 		resp := w.Result()
 		body, _ := io.ReadAll(resp.Body)

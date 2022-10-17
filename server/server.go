@@ -525,7 +525,7 @@ func sendUnauthorizedResponse(logger *zerolog.Logger, w http.ResponseWriter, rea
 	// Return FleetLock formatted JSON if this authentication error
 	// was made on a FleetLock endpoint
 	if flEndpoint {
-		err := fleetLockSendError("unauthorized_request", "you need to authenticate to a take lock", http.StatusUnauthorized, w)
+		err := fleetLockSendError("unauthorized_request", "you need to authenticate to acquire or release a lock", http.StatusUnauthorized, w)
 		if err != nil {
 			logger.Err(err).Msg("failed sending FleetLock error to client")
 			w.WriteHeader(http.StatusInternalServerError)
