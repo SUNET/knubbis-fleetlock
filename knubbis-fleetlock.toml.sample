@@ -1,9 +1,9 @@
 [server]
 listen = ":8443"
-readtimeout = "10s"
-writetimeout = "10s"
+read_timeout = "10s"
+write_timeout = "10s"
 backend = "etcd3"
-shutdowndelay = "5s"
+shutdown_delay = "5s"
 [ratelimit]
 rate = 1.0
 burst = 3
@@ -11,30 +11,30 @@ burst = 3
 endpoints = ["https://localhost:2379"]
 username = "knubbis-fleetlock"
 password = "changeme"
-insecureskipverify = false
+insecure_skip_verify = false
 [certmagic]
 salt = "36023a78c7d2000ac58604da1b630a9e"
 password = "changeme"
-etcd3path = "com.example.fleetlock/certmagic"
-letsencryptprod = false
+etcd3_path = "com.example.fleetlock/certmagic"
+letsencrypt_prod = false
 email = "someone@example.com"
 domains = ["fleetlock.example.com"]
 [acmedns."fleetlock.example.com"]
 username = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 password = "changeme"
 subdomain = "eeeeeeee-dddd-cccc-bbbb-aaaaaaaaaaaa"
-fulldomain = "eeeeeeee-dddd-cccc-bbbb-aaaaaaaaaaaa.acme-dns.example.com"
-serverurl = "https://acme-dns.example.com"
+full_domain = "eeeeeeee-dddd-cccc-bbbb-aaaaaaaaaaaa.acme-dns.example.com"
+server_url = "https://acme-dns.example.com"
 [fleetlock.workers]
-totalSlots = 2
-staleAge = "1h"
+total_slots = 2
+stale_age = "1h"
 [fleetlock.apps]
-totalSlots = 2
-staleAge = "1h"
+total_slots = 2
+stale_age = "1h"
 [prometheus]
 listen = "127.0.0.1:2222"
-readtimeout = "10s"
-writetimeout = "10s"
+read_timeout = "10s"
+write_timeout = "10s"
 [permissions.workers1]
 '*' = "changeme1"
 [permissions.dbs]

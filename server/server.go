@@ -70,9 +70,9 @@ type serverConfig struct {
 type serverSettings struct {
 	Listen        string
 	Backend       string
-	ReadTimeout   duration
-	WriteTimeout  duration
-	ShutdownDelay duration
+	ReadTimeout   duration `toml:"read_timeout"`
+	WriteTimeout  duration `toml:"write_timeout"`
+	ShutdownDelay duration `toml:"shutdown_delay"`
 }
 
 type ratelimitSettings struct {
@@ -82,8 +82,8 @@ type ratelimitSettings struct {
 
 type prometheusSettings struct {
 	Listen       string
-	ReadTimeout  duration
-	WriteTimeout duration
+	ReadTimeout  duration `toml:"read_timeout"`
+	WriteTimeout duration `toml:"write_timeout"`
 }
 
 type monitoringConfig struct {
@@ -99,19 +99,19 @@ type etcd3config struct {
 	Endpoints          []string
 	Username           string
 	Password           string
-	InsecureSkipVerify bool
+	InsecureSkipVerify bool `toml:"insecure_skip_verify"`
 }
 
 type groupSettings struct {
-	TotalSlots int
-	StaleAge   duration
+	TotalSlots int      `toml:"total_slots"`
+	StaleAge   duration `toml:"stale_age"`
 }
 
 type certMagicConfig struct {
 	Salt            string
 	Password        string
-	Etcd3Path       string
-	LetsEncryptProd bool
+	Etcd3Path       string `toml:"etcd3_path"`
+	LetsEncryptProd bool   `toml:"letsencrypt_prod"`
 	Email           string
 	Domains         []string
 }
@@ -122,8 +122,8 @@ type acmeDNSDomainSettings struct {
 	Username   string
 	Password   string
 	Subdomain  string
-	FullDomain string
-	ServerURL  string
+	FullDomain string `toml:"full_domain"`
+	ServerURL  string `toml:"server_url"`
 }
 
 func fleetLockSendError(kind, value string, statusCode int, w http.ResponseWriter) error {
@@ -822,14 +822,6 @@ func Run(configPath string) {
 
 	logger := newLogger(service, hostname)
 
-	//logger := zerolog.New(os.Stderr).With().
-	//	Timestamp().
-	//	Str("service", service).
-	//	Str("host", host).
-	//	Str("server_version", version).
-	//	Str("go_version", runtime.Version()).
-	//	Logger()
-
 	logger.Info().Msgf("starting server")
 
 	conf, err := newConfig(configPath)
@@ -838,15 +830,6 @@ func Run(configPath string) {
 	}
 
 	flattenedPerms := flattenFleetLockPermissions(conf.Permissions)
-
-	//etcd3Config := clientv3.Config{
-	//	Endpoints:   conf.Etcd3.Endpoints,
-	//	DialTimeout: 5 * time.Second,
-	//	Username:    conf.Etcd3.Username,
-	//	Password:    conf.Etcd3.Password,
-	//}
-
-	//etcd3Config.TLS = &tls.Config{InsecureSkipVerify: conf.Etcd3.InsecureSkipVerify} // #nosec this is configurable for testing
 
 	etcd3TLSConfig := &tls.Config{InsecureSkipVerify: conf.Etcd3.InsecureSkipVerify} // #nosec this is configurable for testing
 
@@ -863,18 +846,6 @@ func Run(configPath string) {
 			Err(err).
 			Msg("cannot create etcd3 locker")
 	}
-	//flMap := map[string]fleetlock.FleetLocker{}
-
-	//for group, settings := range conf.FleetLock {
-	//	logger.Info().Msgf("configuring group '%s' with total slots: %d", group, settings.TotalSlots)
-	//	el, err := etcd3.NewLocker(etcd3Client, group, settings.TotalSlots, settings.StaleAge.Duration)
-	//	if err != nil {
-	//		logger.Fatal().
-	//			Err(err).
-	//			Msg("cannot create etcd3 locker")
-	//	}
-	//	flMap[group] = el
-	//}
 
 	limiter := newIPLimiter()
 
@@ -912,11 +883,6 @@ func Run(configPath string) {
 	staleLocksChain := alice.New(monitoringMiddlewares...).Then(staleLocksFunc(flMap, timeout, conf.FleetLock))
 
 	router := newRouter(preRebootChain, steadyStateChain, lockStatusChain, staleLocksChain)
-
-	//router.Handler("POST", "/v1/pre-reboot", preRebootChain)
-	//router.Handler("POST", "/v1/steady-state", steadyStateChain)
-	//router.Handler("GET", "/lock-status", lockStatusChain)
-	//router.Handler("GET", "/stale-locks", staleLocksChain)
 
 	// https://datatracker.ietf.org/doc/rfc9106/
 	// Nonce S, which is a salt for password hashing applications.
@@ -1123,7 +1089,6 @@ func newEtcd3Client(conf etcd3config, tlsConfig *tls.Config) (*clientv3.Client, 
 		Password:    conf.Password,
 	}
 
-	//etcd3Config.TLS = &tls.Config{InsecureSkipVerify: conf.InsecureSkipVerify} // #nosec this is configurable for testing
 	etcd3Config.TLS = tlsConfig
 
 	etcd3Client, err := clientv3.New(etcd3Config)
