@@ -45,13 +45,8 @@ func (ts testLocker) LockStatus(ctx context.Context) (fleetlock.LockStatus, erro
 	return fleetlock.LockStatus{}, nil
 }
 
-func TestPreRebootHandler(t *testing.T) {
+func TestFleetLockHandlers(t *testing.T) {
 	t.Parallel()
-
-	// TODO(patlu):
-	// nil body
-	// unathenticated
-	// rate limit
 
 	flb := fleetlock.FleetLockBody{
 		ClientParams: fleetlock.ClientParams{
