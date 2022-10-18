@@ -22,6 +22,7 @@ etcd3_path = "com.example.fleetlock/certmagic"
 letsencrypt_prod = false
 email = "someone@example.com"
 domains = ["fleetlock.example.com"]
+
 [acmedns."fleetlock.example.com"]
 username = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 password = "changeme"
