@@ -175,17 +175,21 @@ func preRebootFunc(flMap map[string]fleetlock.FleetLocker, timeout time.Duration
 		if err != nil {
 			logger.Err(err).Msg("failed getting lock")
 
-			// Set default error content
+			// Set default error content and status
 			msg := "failed getting lock"
+			errStatus := http.StatusInternalServerError
 
 			// If specific type of error we trust that the
 			// string returned can be sent to the client
 			// as-is
 			if rlerr, ok := err.(*fleetlock.RecursiveLockError); ok {
 				msg = rlerr.Error()
+				if rlerr.AllSlotsTaken {
+					errStatus = http.StatusConflict
+				}
 			}
 
-			err = fleetLockSendError("failed_lock", msg, http.StatusInternalServerError, w)
+			err = fleetLockSendError("failed_lock", msg, errStatus, w)
 			if err != nil {
 				logger.Err(err).Msg("failed sending RecursiveLock error")
 			}

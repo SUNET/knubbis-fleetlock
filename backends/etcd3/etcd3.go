@@ -96,7 +96,8 @@ func (eb *Etcd3Backend) RecursiveLock(ctx context.Context, id string) error {
 
 		if len(sData.Holders) >= sData.TotalSlots {
 			return &fleetlock.RecursiveLockError{
-				ClientMsg: fmt.Sprintf("all %d slots are currently taken", sData.TotalSlots),
+				ClientMsg:     fmt.Sprintf("all %d slots are currently taken", sData.TotalSlots),
+				AllSlotsTaken: true,
 			}
 		}
 

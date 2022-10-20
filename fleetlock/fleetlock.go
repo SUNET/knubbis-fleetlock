@@ -85,7 +85,8 @@ func (d Duration) MarshalJSON() ([]byte, error) {
 // type of error it can trust the message in clientMsg is safe to send to the
 // client as-is in a FleetLockError value.
 type RecursiveLockError struct {
-	ClientMsg string
+	ClientMsg     string
+	AllSlotsTaken bool
 }
 
 func (le *RecursiveLockError) Error() string {

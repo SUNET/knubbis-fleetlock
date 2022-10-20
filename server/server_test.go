@@ -30,11 +30,11 @@ type testLocker struct {
 }
 
 func (ts testLocker) RecursiveLock(ctx context.Context, id string) error {
-	return nil
+	return ts.recursiveLockErr
 }
 
 func (ts testLocker) UnlockIfHeld(ctx context.Context, id string) error {
-	return nil
+	return ts.unlockIfHeldErr
 }
 
 func (ts testLocker) Group() string {
@@ -93,6 +93,27 @@ func TestFleetLockHandlers(t *testing.T) {
 			fleetLockHeaderValue: "true",
 			authPassword:         "changeme",
 			expectedStatusCode:   http.StatusOK,
+			url:                  preRebootURL,
+		},
+		{
+			name: "prereboot-lock-all-slots-taken",
+			flMap: map[string]fleetlock.FleetLocker{
+				"workers": testLocker{
+					group:            "workers",
+					recursiveLockErr: &fleetlock.RecursiveLockError{ClientMsg: "all slots are taken", AllSlotsTaken: true},
+					unlockIfHeldErr:  nil,
+					lockStatus: fleetlock.LockStatus{
+						TotalSlots: 1,
+						Holders:    []fleetlock.Holder{},
+					},
+				},
+			},
+			flBody:               flBodyBytes,
+			fleetLockHeaderName:  "fleet-lock-protocol",
+			fleetLockHeaderValue: "true",
+			authPassword:         "changeme",
+			expectedStatusCode:   http.StatusConflict,
+			expectedContentType:  "application/json; charset=utf-8",
 			url:                  preRebootURL,
 		},
 		{
@@ -300,7 +321,7 @@ func TestFleetLockHandlers(t *testing.T) {
 		}
 
 		if !bytes.Equal(expectedBody, body) {
-			t.Errorf("unexpected body (%s), got: '%s', want: '%s'", goldenFn, string(expectedBody), string(body))
+			t.Errorf("unexpected body (%s), got: '%s', want: '%s'", goldenFn, string(body), string(expectedBody))
 		}
 	}
 }
