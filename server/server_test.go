@@ -261,7 +261,7 @@ func TestFleetLockHandlers(t *testing.T) {
 	hlogMiddlewares := newHlogMiddlewareChain(logger)
 	limiter := newIPLimiter()
 	conf := defaultServerConfig()
-	flattenedPerms := flattenFleetLockPermissions(conf.Permissions)
+	flattenedPerms := flattenFleetLockPermissions(conf.FleetLock)
 
 	// Disable rate limit check so that the tests do not trip the
 	// rate limiter, returning 429 responses.

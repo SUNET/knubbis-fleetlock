@@ -56,15 +56,14 @@ func (d *duration) UnmarshalText(text []byte) error {
 // serverConfig is the main config struct filled in by parsing a TOML
 // file
 type serverConfig struct {
-	Server      serverSettings
-	Ratelimit   ratelimitSettings
-	Prometheus  prometheusSettings
-	Permissions serverPermissions
-	Etcd3       etcd3config
-	FleetLock   fleetLockConfig
-	CertMagic   certMagicConfig
-	AcmeDNS     acmeDNSConfig
-	Monitoring  monitoringConfig
+	Server     serverSettings
+	Ratelimit  ratelimitSettings
+	Prometheus prometheusSettings
+	Etcd3      etcd3config
+	FleetLock  fleetLockConfig
+	CertMagic  certMagicConfig
+	AcmeDNS    acmeDNSConfig
+	Monitoring monitoringConfig
 }
 
 type serverSettings struct {
@@ -91,8 +90,6 @@ type monitoringConfig struct {
 	Password string
 }
 
-type serverPermissions map[string]map[string]string
-
 type fleetLockConfig map[string]groupSettings
 
 type etcd3config struct {
@@ -103,8 +100,9 @@ type etcd3config struct {
 }
 
 type groupSettings struct {
-	TotalSlots int      `toml:"total_slots"`
-	StaleAge   duration `toml:"stale_age"`
+	TotalSlots  int               `toml:"total_slots"`
+	StaleAge    duration          `toml:"stale_age"`
+	Permissions map[string]string `toml:"permissions"`
 }
 
 type certMagicConfig struct {
@@ -735,11 +733,6 @@ func defaultServerConfig() serverConfig {
 				Duration: time.Duration(10 * time.Second),
 			},
 		},
-		Permissions: serverPermissions{
-			"workers": map[string]string{
-				"*": "changeme",
-			},
-		},
 		Etcd3: etcd3config{
 			Endpoints:          []string{"https://localhost:2379"},
 			Username:           "knubbis-fleetlock",
@@ -751,6 +744,9 @@ func defaultServerConfig() serverConfig {
 				TotalSlots: 1,
 				StaleAge: duration{
 					Duration: time.Second * 3600,
+				},
+				Permissions: map[string]string{
+					"*": "changeme",
 				},
 			},
 		},
@@ -787,12 +783,12 @@ func newConfig(configFile string) (serverConfig, error) {
 // Flatten permissions from "group" => "id" => "password" to "group-id"
 // => "[]byte(sha256(password))" for easier lookup, and also hash the
 // password for later constant time comparision
-func flattenFleetLockPermissions(confPerms serverPermissions) map[string][]byte {
+func flattenFleetLockPermissions(flc fleetLockConfig) map[string][]byte {
 
 	flattenedPerms := map[string][]byte{}
 
-	for group, idMap := range confPerms {
-		for id, password := range idMap {
+	for group, groupSettings := range flc {
+		for id, password := range groupSettings.Permissions {
 			// We convert the plaintext password to a sha256 hash
 			// because subtle.ConstantTimeCompare requires the input
 			// strings being compared to be of the same length.
@@ -842,7 +838,7 @@ func Run(configPath string) {
 		logger.Fatal().Err(err).Msg("unable to create server config")
 	}
 
-	flattenedPerms := flattenFleetLockPermissions(conf.Permissions)
+	flattenedPerms := flattenFleetLockPermissions(conf.FleetLock)
 
 	etcd3TLSConfig := &tls.Config{InsecureSkipVerify: conf.Etcd3.InsecureSkipVerify} // #nosec this is configurable for testing
 
