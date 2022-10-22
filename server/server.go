@@ -314,7 +314,6 @@ func staleLocksFunc(flMap map[string]fleetlock.FleetLocker, timeout time.Duratio
 				return
 			}
 			for _, holder := range ls.Holders {
-				//if time.Since(holder.LockTime) > flc[group].StaleAge.Duration {
 				if time.Since(holder.LockTime) > holder.StaleAge.Duration {
 					sld.StaleLocks = true
 					sld.Groups[group] = append(sld.Groups[group], holder.ID)
