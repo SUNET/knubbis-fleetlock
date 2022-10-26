@@ -7,7 +7,7 @@ COPY . .
 
 RUN go mod download
 RUN go test -race ./...
-RUN CGO_ENABLED=0 go build -ldflags="-X github.com/SUNET/knubbis-fleetlock/server.version=$VERSION" -o /go/bin/knubbis-fleetlock
+RUN CGO_ENABLED=0 go build -ldflags="-w -s -X github.com/SUNET/knubbis-fleetlock/server.version=$VERSION" -o /go/bin/knubbis-fleetlock
 
 FROM gcr.io/distroless/static-debian11:nonroot
 COPY --from=build /go/bin/knubbis-fleetlock /
