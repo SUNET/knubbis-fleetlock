@@ -13,13 +13,19 @@ import (
 	"golang.org/x/exp/slices"
 )
 
+const groupPrefix = "se.sunet.knubbis/fleetlock/groups"
+const groupSuffix = "v1/semaphore"
+
+func groupSemaphorePath(group string) string {
+	return fmt.Sprintf("%s/%s/%s", groupPrefix, group, groupSuffix)
+}
+
 type semaphore struct {
 	TotalSlots int                `json:"total_slots"`
 	Holders    []fleetlock.Holder `json:"holders"`
 }
 
-// The type implementing the FleetLock interface using etcd3 as a
-// backend
+// Type implementing the FleetLock interface using etcd3 as a backend
 type Etcd3Backend struct {
 	client     *clientv3.Client
 	key        string
@@ -28,11 +34,13 @@ type Etcd3Backend struct {
 	staleAge   fleetlock.Duration
 }
 
-func NewLocker(client *clientv3.Client, group string, totalSlots int, staleAge time.Duration) (*Etcd3Backend, error) {
+// Type implementing the FleetLockConfiger interface using etcd3 as a backend
+type Etcd3Config struct {
+	client *clientv3.Client
+	key    string
+}
 
-	fld := fleetlock.Duration{
-		Duration: staleAge,
-	}
+func newLocker(client *clientv3.Client, group string, totalSlots int, staleAge fleetlock.Duration) (*Etcd3Backend, error) {
 
 	if !fleetlock.ValidGroup.MatchString(group) {
 		return nil, fmt.Errorf("group name '%s' is not valid", group)
@@ -40,9 +48,9 @@ func NewLocker(client *clientv3.Client, group string, totalSlots int, staleAge t
 	return &Etcd3Backend{
 		client:     client,
 		group:      group,
-		key:        fmt.Sprintf("se.sunet.knubbis/fleetlock/groups/%s/v1/semaphore", group),
+		key:        groupSemaphorePath(group),
 		totalSlots: totalSlots,
-		staleAge:   fld,
+		staleAge:   staleAge,
 	}, nil
 }
 
@@ -248,4 +256,222 @@ func (eb *Etcd3Backend) atomicWrite(sData semaphore, version int64) error {
 		return fmt.Errorf("atomicWrite: transaction initializing semaphore failed")
 	}
 	return nil
+}
+
+func NewConfiger(client *clientv3.Client, configName string) (*Etcd3Config, error) {
+	return &Etcd3Config{
+		client: client,
+		key:    fmt.Sprintf("se.sunet.knubbis/fleetlock/config/%s/v1/data", configName),
+	}, nil
+}
+
+// atomicConfigWrite creates or overwrites the existing config value in
+// etcd, requiring that the value being overwritten is currently at the
+// supplied version number. This ensures that two simultanous writers
+// will not overwrite eachother. Only the one handled first will
+// succeed, and the other one will fail as its version is no longer
+// valid, requring a new read of the value.
+func (ec *Etcd3Config) atomicConfigWrite(ctx context.Context, cData fleetlock.FleetLockConfig, version int64) error {
+	b, err := json.Marshal(cData)
+	if err != nil {
+		return fmt.Errorf("atomicConfigWrite: unable to marshal JSON: %w", err)
+	}
+
+	txnResp, err := ec.client.Txn(ctx).
+		If(clientv3.Compare(clientv3.Version(ec.key), "=", version)).
+		Then(clientv3.OpPut(ec.key, string(b))).
+		Commit()
+	if err != nil {
+		return fmt.Errorf("atomicConfigWrite: unable to commit config key '%s': %w", ec.key, err)
+	}
+
+	if !txnResp.Succeeded {
+		return fmt.Errorf("atomicConfigWrite: transaction writing config failed")
+	}
+	return nil
+}
+
+func (ec *Etcd3Config) GetConfig(ctx context.Context) (fleetlock.FleetLockConfig, error) {
+	// Fetch config data (which may not exist yet)
+	s, err := ec.client.Get(ctx, ec.key)
+	if err != nil {
+		return fleetlock.FleetLockConfig{}, fmt.Errorf("GetConfig: Get key: %w", err)
+	}
+
+	logger := zerolog.Ctx(ctx)
+
+	switch numKvs := len(s.Kvs); numKvs {
+	case 0:
+		// No config exists, return empty one
+		logger.Info().Msg("returning empty config from etcd3")
+		return fleetlock.FleetLockConfig{}, nil
+	case 1:
+		// The config data exists, return it
+		cData := fleetlock.FleetLockConfig{}
+		err := json.Unmarshal(s.Kvs[0].Value, &cData)
+		if err != nil {
+			return fleetlock.FleetLockConfig{}, fmt.Errorf("GetConfig: unable to marshal KV value: %w", err)
+		}
+
+		logger.Info().Msg("returning config from etcd3")
+		return cData, nil
+	default:
+		return fleetlock.FleetLockConfig{}, fmt.Errorf("RecursiveLock: unexpected number KVs in response: %d", len(s.Kvs))
+	}
+}
+
+func (ec *Etcd3Config) GetLockers(ctx context.Context) (map[string]fleetlock.FleetLocker, error) {
+	logger := zerolog.Ctx(ctx)
+
+	logger.Info().Msg("getting lockers")
+
+	lockers := map[string]fleetlock.FleetLocker{}
+
+	config, err := ec.GetConfig(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("GetLockers: unable to GetConfig: %w", err)
+	}
+
+	for group, groupSettings := range config {
+		backend, err := newLocker(ec.client, group, groupSettings.TotalSlots, groupSettings.StaleAge)
+		if err != nil {
+			return nil, fmt.Errorf("GetLockers: unable to create locker backend: %w", err)
+		}
+		lockers[group] = backend
+	}
+
+	return lockers, nil
+}
+
+func (ec *Etcd3Config) AddGroup(ctx context.Context, group string, totalSlots int, staleAge fleetlock.Duration, permissions map[string]string) error {
+
+	if !fleetlock.ValidGroup.MatchString(group) {
+		return fmt.Errorf("AddGroup: group name '%s' is not valid", group)
+	}
+	// Fetch config data (which may not exist yet)
+	s, err := ec.client.Get(ctx, ec.key)
+	if err != nil {
+		return fmt.Errorf("AddGroup: Get key: %w", err)
+	}
+
+	logger := zerolog.Ctx(ctx)
+
+	switch numKvs := len(s.Kvs); numKvs {
+	case 0:
+		// No config exists, create new one
+		logger.Info().Msgf("adding group '%s' to config", group)
+		flc := fleetlock.FleetLockConfig{
+			group: fleetlock.GroupSettings{
+				TotalSlots:  totalSlots,
+				StaleAge:    staleAge,
+				Permissions: permissions,
+			},
+		}
+
+		// We expect the value to be created (version 0)
+		err := ec.atomicConfigWrite(ctx, flc, 0)
+		if err != nil {
+			return fmt.Errorf("AddGroup: error creating config: %w", err)
+		}
+
+		return nil
+	case 1:
+		// The config data exists, add the group if it does
+		// not exist in the data
+		flc := fleetlock.FleetLockConfig{}
+		err := json.Unmarshal(s.Kvs[0].Value, &flc)
+		if err != nil {
+			return fmt.Errorf("AddGroup: unable to marshal KV value: %w", err)
+		}
+
+		_, exists := flc[group]
+
+		if exists {
+			return fmt.Errorf("AddGroup: group '%s' already exists", group)
+		}
+
+		// Add the group config
+		flc[group] = fleetlock.GroupSettings{
+			TotalSlots:  totalSlots,
+			StaleAge:    staleAge,
+			Permissions: permissions,
+		}
+
+		err = ec.atomicConfigWrite(ctx, flc, s.Kvs[0].Version)
+		if err != nil {
+			return fmt.Errorf("AddGroup: error adding group '%s' to config: %w", group, err)
+		}
+		return nil
+	default:
+		return fmt.Errorf("AddGroup: unexpected number KVs in response: %d", len(s.Kvs))
+	}
+}
+
+func (ec *Etcd3Config) DelGroup(ctx context.Context, group string) error {
+	if !fleetlock.ValidGroup.MatchString(group) {
+		return fmt.Errorf("DelGroup: group name '%s' is not valid", group)
+	}
+	// Fetch config data (which may not exist yet)
+	s, err := ec.client.Get(ctx, ec.key)
+	if err != nil {
+		return fmt.Errorf("DelGroup: Get key: %w", err)
+	}
+
+	logger := zerolog.Ctx(ctx)
+
+	switch numKvs := len(s.Kvs); numKvs {
+	case 0:
+		// No config exists, error out
+		logger.Info().Msgf("trying to delete group '%s' from empty config", group)
+		return fmt.Errorf("DelGroup: unable to delete group '%s' from empty config: %w", group, err)
+	case 1:
+		// The config data exists, delete the group if it exists
+		// in the data
+		flc := fleetlock.FleetLockConfig{}
+		err := json.Unmarshal(s.Kvs[0].Value, &flc)
+		if err != nil {
+			return fmt.Errorf("DelGroup: unable to marshal KV value: %w", err)
+		}
+
+		_, exists := flc[group]
+
+		if !exists {
+			return fmt.Errorf("DelGroup: group '%s' does not exist", group)
+		}
+
+		// Delete the group config
+		delete(flc, group)
+
+		err = ec.atomicConfigWrite(ctx, flc, s.Kvs[0].Version)
+		if err != nil {
+			return fmt.Errorf("DelGroup: error deleting group '%s' from config: %w", group, err)
+		}
+
+		// Cleanup related semaphore
+		semaphoreKey := groupSemaphorePath(group)
+
+		dr, err := ec.client.Delete(ctx, semaphoreKey)
+		if err != nil {
+			return fmt.Errorf("DelGroup: Delete semaphore key '%s': %w", semaphoreKey, err)
+		}
+
+		if dr.Deleted != 1 {
+			return fmt.Errorf("DelGroup: unexpected number of delete entries: %d", dr.Deleted)
+		}
+
+		return nil
+	default:
+		return fmt.Errorf("DelGroup: unexpected number KVs in response: %d", len(s.Kvs))
+	}
+}
+
+func (ec *Etcd3Config) GetNotifierChan(ctx context.Context) (interface{}, error) {
+	rch := ec.client.Watch(ctx, ec.key)
+
+	return rch, nil
+}
+
+func (ec *Etcd3Config) Key() string {
+
+	return ec.key
 }

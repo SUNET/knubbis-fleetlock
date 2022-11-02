@@ -14,6 +14,7 @@ service used at Google, see: [The Chubby lock service for loosely-coupled distri
 
 ## Features
 * BasicAuth for restricting who can take a lock in a given group.
+* API for managing FleetLock groups with Swagger UI.
 * Automatic ACME TLS handling via [CertMagic](https://github.com/caddyserver/certmagic).
 * Ratelimits requests per IP with a configurable rate and burst limit.
 * Structured JSON logging.
@@ -77,6 +78,13 @@ etcdctl --user root role grant-permission --prefix=true knubbis-fleetlock-role r
 etcdctl --user root user grant-role knubbis-fleetlock knubbis-fleetlock-role
 ```
 
+### Adding FleetLock groups
+The config for FleetLock groups are stored in the backend etcd3. You
+will need to add at least one before you have anything to grab locks in.
+
+The Swagger UI can help you add and delete groups and is accessible by
+browsing `/swagger` on the running server.
+
 ## Development
 ### Formatting and linting
 When working with this code at least the following tools are expected to be
@@ -85,6 +93,11 @@ run at the top level directory prior to commiting:
 * `go vet ./...`
 * `staticcheck ./...` (see [staticcheck](https://staticcheck.io))
 * `gosec ./...` (see [gosec](https://github.com/securego/gosec))
+
+If you have modified the Swagger comments you need to regenerate the
+relevant files:
+* `go install github.com/swaggo/swag/cmd/swag@latest`
+* `go generate ./...`
 
 ### CLI (flags)
 The CLI and flag handling is managed with [Cobra](https://github.com/spf13/cobra). If you want to add additional subcommands this can be done using `cobra-cli`, see for example [Cobra Generator](https://github.com/spf13/cobra-cli/blob/main/README.md)

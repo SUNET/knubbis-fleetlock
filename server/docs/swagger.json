@@ -1,0 +1,133 @@
+{
+    "swagger": "2.0",
+    "info": {
+        "description": "This API is used for managing FleetLock groups.",
+        "title": "Swagger Knubbis FleetLock API",
+        "contact": {
+            "name": "Patrik Lundin",
+            "url": "https://www.sunet.se",
+            "email": "patlu@sunet.se"
+        },
+        "license": {
+            "name": "BSD 2-Clause",
+            "url": "https://github.com/SUNET/knubbis-fleetlock/blob/main/LICENSE"
+        },
+        "version": "0.0.1"
+    },
+    "host": "localhost:8443",
+    "basePath": "/api/v1",
+    "paths": {
+        "/groups": {
+            "post": {
+                "description": "Add a new FleetLock group",
+                "consumes": [
+                    "application/json"
+                ],
+                "tags": [
+                    "groups"
+                ],
+                "summary": "Add a group",
+                "parameters": [
+                    {
+                        "description": "Add group",
+                        "name": "group",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/server.addGroupModel"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK"
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiError"
+                        }
+                    }
+                }
+            }
+        },
+        "/groups/{group}": {
+            "delete": {
+                "description": "Delete a FleetLock group",
+                "consumes": [
+                    "application/json"
+                ],
+                "tags": [
+                    "groups"
+                ],
+                "summary": "Delete a group",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Group name",
+                        "name": "group",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK"
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiError"
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "definitions": {
+        "server.addGroupModel": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "example": "workers"
+                },
+                "permissions": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string"
+                    },
+                    "example": {
+                        "*": "changeme"
+                    }
+                },
+                "stale_age": {
+                    "type": "string",
+                    "example": "1h"
+                },
+                "total_slots": {
+                    "type": "integer",
+                    "example": 1
+                }
+            }
+        },
+        "server.apiError": {
+            "type": "object",
+            "properties": {
+                "message": {
+                    "type": "string",
+                    "example": "status bad request"
+                },
+                "status_code": {
+                    "type": "integer",
+                    "example": 400
+                }
+            }
+        }
+    },
+    "securityDefinitions": {
+        "BasicAuth": {
+            "type": "basic"
+        }
+    }
+}

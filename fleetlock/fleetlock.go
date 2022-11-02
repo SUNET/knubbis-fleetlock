@@ -92,3 +92,21 @@ type RecursiveLockError struct {
 func (le *RecursiveLockError) Error() string {
 	return le.ClientMsg
 }
+
+type FleetLockConfig map[string]GroupSettings
+
+// "example" and "swaggerype" tags are used by swaggo/swag for creating
+// docs
+type GroupSettings struct {
+	TotalSlots  int               `json:"total_slots" example:"1"`
+	StaleAge    Duration          `json:"stale_age" swaggertype:"string" example:"1h"`
+	Permissions map[string]string `json:"permissions" example:"*:changeme"`
+}
+
+type FleetLockConfiger interface {
+	GetConfig(ctx context.Context) (FleetLockConfig, error)
+	GetLockers(ctx context.Context) (map[string]FleetLocker, error)
+	GetNotifierChan(ctx context.Context) (interface{}, error)
+	AddGroup(ctx context.Context, group string, totalSlots int, staleAge Duration, permissions map[string]string) error
+	DelGroup(ctx context.Context, group string) error
+}

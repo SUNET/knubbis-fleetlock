@@ -1,0 +1,89 @@
+basePath: /api/v1
+definitions:
+  server.addGroupModel:
+    properties:
+      name:
+        example: workers
+        type: string
+      permissions:
+        additionalProperties:
+          type: string
+        example:
+          '*': changeme
+        type: object
+      stale_age:
+        example: 1h
+        type: string
+      total_slots:
+        example: 1
+        type: integer
+    type: object
+  server.apiError:
+    properties:
+      message:
+        example: status bad request
+        type: string
+      status_code:
+        example: 400
+        type: integer
+    type: object
+host: localhost:8443
+info:
+  contact:
+    email: patlu@sunet.se
+    name: Patrik Lundin
+    url: https://www.sunet.se
+  description: This API is used for managing FleetLock groups.
+  license:
+    name: BSD 2-Clause
+    url: https://github.com/SUNET/knubbis-fleetlock/blob/main/LICENSE
+  title: Swagger Knubbis FleetLock API
+  version: 0.0.1
+paths:
+  /groups:
+    post:
+      consumes:
+      - application/json
+      description: Add a new FleetLock group
+      parameters:
+      - description: Add group
+        in: body
+        name: group
+        required: true
+        schema:
+          $ref: '#/definitions/server.addGroupModel'
+      responses:
+        "200":
+          description: OK
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiError'
+      summary: Add a group
+      tags:
+      - groups
+  /groups/{group}:
+    delete:
+      consumes:
+      - application/json
+      description: Delete a FleetLock group
+      parameters:
+      - description: Group name
+        in: path
+        name: group
+        required: true
+        type: string
+      responses:
+        "200":
+          description: OK
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/server.apiError'
+      summary: Delete a group
+      tags:
+      - groups
+securityDefinitions:
+  BasicAuth:
+    type: basic
+swagger: "2.0"

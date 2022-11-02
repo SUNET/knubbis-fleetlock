@@ -45,6 +45,32 @@ func (ts testLocker) LockStatus(ctx context.Context) (fleetlock.LockStatus, erro
 	return fleetlock.LockStatus{}, nil
 }
 
+// Satisfy the fleetlock.FleetConfiger interface
+type testConfiger struct {
+	flMap    map[string]fleetlock.FleetLocker
+	flConfig fleetlock.FleetLockConfig
+}
+
+func (tc testConfiger) GetConfig(ctx context.Context) (fleetlock.FleetLockConfig, error) {
+	return tc.flConfig, nil
+}
+
+func (tc testConfiger) GetLockers(ctx context.Context) (map[string]fleetlock.FleetLocker, error) {
+	return tc.flMap, nil
+}
+
+func (tc testConfiger) GetNotifierChan(ctx context.Context) (interface{}, error) {
+	return nil, nil
+}
+
+func (tc testConfiger) AddGroup(ctx context.Context, group string, totalSlots int, staleAge fleetlock.Duration, permissions map[string]string) error {
+	return nil
+}
+
+func (tc testConfiger) DelGroup(ctx context.Context, group string) error {
+	return nil
+}
+
 func TestFleetLockHandlers(t *testing.T) {
 	t.Parallel()
 
@@ -63,6 +89,18 @@ func TestFleetLockHandlers(t *testing.T) {
 	preRebootURL := "http://example.com/v1/pre-reboot"
 	steadyStateURL := "http://example.com/v1/steady-state"
 
+	flConfig := fleetlock.FleetLockConfig{
+		"workers": fleetlock.GroupSettings{
+			TotalSlots: 1,
+			StaleAge: fleetlock.Duration{
+				Duration: time.Second * 3600,
+			},
+			Permissions: map[string]string{
+				"*": "changeme",
+			},
+		},
+	}
+
 	tests := []struct {
 		name                 string
 		flMap                map[string]fleetlock.FleetLocker
@@ -74,6 +112,7 @@ func TestFleetLockHandlers(t *testing.T) {
 		expectedContentType  string
 		expectedBody         []byte
 		url                  string
+		flConfig             fleetlock.FleetLockConfig
 	}{
 		{
 			name: "prereboot-lock-successful",
@@ -94,6 +133,7 @@ func TestFleetLockHandlers(t *testing.T) {
 			authPassword:         "changeme",
 			expectedStatusCode:   http.StatusOK,
 			url:                  preRebootURL,
+			flConfig:             flConfig,
 		},
 		{
 			name: "prereboot-lock-all-slots-taken",
@@ -115,6 +155,7 @@ func TestFleetLockHandlers(t *testing.T) {
 			expectedStatusCode:   http.StatusConflict,
 			expectedContentType:  "application/json; charset=utf-8",
 			url:                  preRebootURL,
+			flConfig:             flConfig,
 		},
 		{
 			name: "prereboot-lock-missing-header",
@@ -133,6 +174,7 @@ func TestFleetLockHandlers(t *testing.T) {
 			expectedStatusCode:  http.StatusBadRequest,
 			expectedContentType: "application/json; charset=utf-8",
 			url:                 preRebootURL,
+			flConfig:            flConfig,
 		},
 		{
 			name: "prereboot-lock-empty-body",
@@ -154,6 +196,7 @@ func TestFleetLockHandlers(t *testing.T) {
 			expectedStatusCode:   http.StatusBadRequest,
 			expectedContentType:  "application/json; charset=utf-8",
 			url:                  preRebootURL,
+			flConfig:             flConfig,
 		},
 		{
 			name: "prereboot-lock-missing-authentication",
@@ -174,6 +217,7 @@ func TestFleetLockHandlers(t *testing.T) {
 			expectedStatusCode:   http.StatusUnauthorized,
 			expectedContentType:  "application/json; charset=utf-8",
 			url:                  preRebootURL,
+			flConfig:             flConfig,
 		},
 		{
 			name: "steadystate-lock-successful",
@@ -194,6 +238,7 @@ func TestFleetLockHandlers(t *testing.T) {
 			authPassword:         "changeme",
 			expectedStatusCode:   http.StatusOK,
 			url:                  steadyStateURL,
+			flConfig:             flConfig,
 		},
 		{
 			name: "steadystate-lock-missing-header",
@@ -212,6 +257,7 @@ func TestFleetLockHandlers(t *testing.T) {
 			expectedStatusCode:  http.StatusBadRequest,
 			expectedContentType: "application/json; charset=utf-8",
 			url:                 steadyStateURL,
+			flConfig:            flConfig,
 		},
 		{
 			name: "steadystate-lock-empty-body",
@@ -233,6 +279,7 @@ func TestFleetLockHandlers(t *testing.T) {
 			expectedStatusCode:   http.StatusBadRequest,
 			expectedContentType:  "application/json; charset=utf-8",
 			url:                  steadyStateURL,
+			flConfig:             flConfig,
 		},
 		{
 			name: "steadystate-lock-missing-authentication",
@@ -253,6 +300,7 @@ func TestFleetLockHandlers(t *testing.T) {
 			expectedStatusCode:   http.StatusUnauthorized,
 			expectedContentType:  "application/json; charset=utf-8",
 			url:                  steadyStateURL,
+			flConfig:             flConfig,
 		},
 	}
 
@@ -261,20 +309,31 @@ func TestFleetLockHandlers(t *testing.T) {
 	hlogMiddlewares := newHlogMiddlewareChain(logger)
 	limiter := newIPLimiter()
 	conf := defaultServerConfig()
-	flattenedPerms := flattenFleetLockPermissions(conf.FleetLock)
 
 	// Disable rate limit check so that the tests do not trip the
 	// rate limiter, returning 429 responses.
 	conf.Ratelimit.Rate = rate.Inf
 
 	ratelimitingMiddleware := ratelimitMiddleware(conf, limiter)
-	fleetLockMiddlewares := newFleetLockMiddlewareChain(hlogMiddlewares, ratelimitingMiddleware, flattenedPerms)
-	timeout := time.Second * 3
 
 	for _, test := range tests {
 
-		preRebootChain := alice.New(fleetLockMiddlewares...).Then(preRebootFunc(test.flMap, timeout))
-		steadyStateChain := alice.New(fleetLockMiddlewares...).Then(steadyStateFunc(test.flMap, timeout))
+		testConfiger := testConfiger{
+			flMap:    test.flMap,
+			flConfig: test.flConfig,
+		}
+
+		cc, err := newConfigCache(context.TODO(), testConfiger)
+		if err != nil {
+			logger.Fatal().Err(err).Msg("unable to initialize config cache")
+		}
+
+		// Create middleware chain used for the FleetLock endpoints.
+		fleetLockMiddlewares := newFleetLockMiddlewareChain(hlogMiddlewares, ratelimitingMiddleware, cc)
+		timeout := time.Second * 3
+
+		preRebootChain := alice.New(fleetLockMiddlewares...).Then(preRebootFunc(cc, timeout))
+		steadyStateChain := alice.New(fleetLockMiddlewares...).Then(steadyStateFunc(cc, timeout))
 		bodyReader := bytes.NewReader(test.flBody)
 		req := httptest.NewRequest("GET", test.url, bodyReader)
 		if test.fleetLockHeaderName != "" {

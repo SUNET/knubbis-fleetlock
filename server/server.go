@@ -11,8 +11,10 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"os"
 	"os/signal"
 	"runtime"
@@ -25,6 +27,7 @@ import (
 	"github.com/SUNET/knubbis-fleetlock/backends/etcd3"
 	"github.com/SUNET/knubbis-fleetlock/certmagic/etcd3storage"
 	"github.com/SUNET/knubbis-fleetlock/fleetlock"
+	"github.com/SUNET/knubbis-fleetlock/server/docs"
 	"github.com/caddyserver/certmagic"
 	"github.com/julienschmidt/httprouter"
 	"github.com/justinas/alice"
@@ -32,13 +35,169 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/hlog"
+	httpSwagger "github.com/swaggo/http-swagger"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"golang.org/x/crypto/argon2"
 	"golang.org/x/time/rate"
 )
 
+// Automatically call swag when running "go generate"
+//go:generate swag fmt -g server.go
+//go:generate swag init --parseDependency -g server.go
+
+// annotations for generating swagger docs:
+//
+// @title                     Swagger Knubbis FleetLock API
+// @version                   0.0.1
+// @description               This API is used for managing FleetLock groups.
+// @contact.name              Patrik Lundin
+// @contact.url               https://www.sunet.se
+// @contact.email             patlu@sunet.se
+// @license.name              BSD 2-Clause
+// @license.url               https://github.com/SUNET/knubbis-fleetlock/blob/main/LICENSE
+// @host                      localhost:8443
+// @BasePath                  /api/v1
+// @securityDefinitions.basic BasicAuth
+
 // version set at build time with -ldflags="-X github.com/SUNET/knubbis-fleetlock/server.version=v0.0.1"
 var version = "unspecified"
+
+// configCache struct is used for storing config settings stored in a
+// backend and can be dynamically updated at runtime. The mutex is used
+// to protect writes and reads to the different maps. The expectation is
+// that struct methods take suitable locks when doing operations.
+type configCache struct {
+	flMap          map[string]fleetlock.FleetLocker
+	flattenedPerms map[string][]byte
+	mutex          *sync.RWMutex
+}
+
+func newConfigCache(ctx context.Context, flConfiger fleetlock.FleetLockConfiger) (*configCache, error) {
+
+	flc, err := flConfiger.GetLockers(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("newConfigCache: unable to get lockers: %w", err)
+	}
+
+	flp, err := getFlattenedPerms(ctx, flConfiger)
+	if err != nil {
+		return nil, fmt.Errorf("newConfigCache: unable to get flattened perms: %w", err)
+	}
+
+	return &configCache{
+		flMap:          flc,
+		flattenedPerms: flp,
+		mutex:          &sync.RWMutex{},
+	}, nil
+}
+
+// runs in a go routine in the background and updates the configCache struct
+// if something changes
+func configCacheUpdater(cc *configCache, flConfiger fleetlock.FleetLockConfiger, logger zerolog.Logger) {
+
+	chanInterface, err := flConfiger.GetNotifierChan(context.Background())
+	if err != nil {
+		logger.Err(err).Msg("unable to get notifier, not starting cache updater")
+		return
+	}
+
+	for {
+		// Since GetNotifier returns an interface we need to find out
+		// what we are actually working with.
+		switch ch := chanInterface.(type) {
+		case clientv3.WatchChan:
+			select {
+			case res := <-ch:
+				logger.Info().Msgf("notified by '%s' event on etcd3 watcher, updating config cache", res.Events[0].Type)
+				err := updateConfigCache(cc, flConfiger)
+				if err != nil {
+					logger.Err(err).Msg("unable to updat config cache")
+				}
+			case <-time.After(time.Second * 300):
+				logger.Info().Msgf("no events seen before timeout value, updating config cache just in case")
+				err := updateConfigCache(cc, flConfiger)
+				if err != nil {
+					logger.Err(err).Msg("unable to update config cache")
+				}
+			}
+		default:
+			logger.Error().Msg("unsupported notifier type, not starting cache updated")
+			return
+		}
+
+	}
+}
+
+func updateConfigCache(cc *configCache, flConfiger fleetlock.FleetLockConfiger) error {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
+	defer cancel()
+	flc, err := flConfiger.GetLockers(ctx)
+	if err != nil {
+		return fmt.Errorf("unable to get lockers: %w", err)
+	}
+
+	flp, err := getFlattenedPerms(ctx, flConfiger)
+	if err != nil {
+		return fmt.Errorf("unable to get flattened perms: %w", err)
+	}
+
+	cc.setLockerMap(flc)
+	cc.setPerms(flp)
+
+	return nil
+}
+
+func (cc *configCache) setLockerMap(flm map[string]fleetlock.FleetLocker) {
+	cc.mutex.Lock()
+	defer cc.mutex.Unlock()
+
+	cc.flMap = flm
+}
+
+func (cc *configCache) setPerms(flattenedPerms map[string][]byte) {
+	cc.mutex.Lock()
+	defer cc.mutex.Unlock()
+
+	cc.flattenedPerms = flattenedPerms
+}
+
+func (cc *configCache) getPerms() map[string][]byte {
+	cc.mutex.RLock()
+	defer cc.mutex.RUnlock()
+
+	// Create copy while holding the lock
+	mCopy := map[string][]byte{}
+	for k, v := range cc.flattenedPerms {
+		mCopy[k] = v
+	}
+
+	return mCopy
+}
+
+func (cc *configCache) getGroupLocker(group string) (fleetlock.FleetLocker, bool) {
+	cc.mutex.RLock()
+	defer cc.mutex.RUnlock()
+
+	groupLocker, groupExists := cc.flMap[group]
+
+	return groupLocker, groupExists
+}
+
+func (cc *configCache) getMap() map[string]fleetlock.FleetLocker {
+	cc.mutex.RLock()
+	defer cc.mutex.RUnlock()
+
+	// Create a copy of the map while we hold the read lock, this way
+	// the returned map is consistent if something modified the map
+	// stored in lrs while the caller of this function was still
+	// using it
+	mCopy := map[string]fleetlock.FleetLocker{}
+	for k, v := range cc.flMap {
+		mCopy[k] = v
+	}
+
+	return mCopy
+}
 
 // https://pkg.go.dev/github.com/burntSushi/toml#readme-examples
 // Used to be able to automatically parse duration strings like "10s" in
@@ -60,10 +219,10 @@ type serverConfig struct {
 	Ratelimit  ratelimitSettings
 	Prometheus prometheusSettings
 	Etcd3      etcd3config
-	FleetLock  fleetLockConfig
 	CertMagic  certMagicConfig
 	AcmeDNS    acmeDNSConfig
 	Monitoring monitoringConfig
+	API        apiConfig
 }
 
 type serverSettings struct {
@@ -90,19 +249,16 @@ type monitoringConfig struct {
 	Password string
 }
 
-type fleetLockConfig map[string]groupSettings
+type apiConfig struct {
+	Username string
+	Password string
+}
 
 type etcd3config struct {
 	Endpoints          []string
 	Username           string
 	Password           string
 	InsecureSkipVerify bool `toml:"insecure_skip_verify"`
-}
-
-type groupSettings struct {
-	TotalSlots  int               `toml:"total_slots"`
-	StaleAge    duration          `toml:"stale_age"`
-	Permissions map[string]string `toml:"permissions"`
 }
 
 type certMagicConfig struct {
@@ -124,6 +280,26 @@ type acmeDNSDomainSettings struct {
 	ServerURL  string `toml:"server_url"`
 }
 
+// apiSendError is used to return error data to a client interacting
+// with the group management API
+func apiSendError(w http.ResponseWriter, message string, statusCode int) error {
+	fle := apiError{
+		StatusCode: statusCode,
+		Message:    message,
+	}
+
+	b, err := json.Marshal(fle)
+	if err != nil {
+		return fmt.Errorf("apiSendError: failed creating API error response: %w", err)
+	}
+	err = writeNewlineJSON(w, b, statusCode)
+	if err != nil {
+		return fmt.Errorf("apiSendError: %w", err)
+	}
+
+	return nil
+}
+
 func fleetLockSendError(kind, value string, statusCode int, w http.ResponseWriter) error {
 	fle := fleetlock.FleetLockError{
 		Kind:  kind,
@@ -143,7 +319,7 @@ func fleetLockSendError(kind, value string, statusCode int, w http.ResponseWrite
 }
 
 // handler called when clients requests to take a lock
-func preRebootFunc(flMap map[string]fleetlock.FleetLocker, timeout time.Duration) http.HandlerFunc {
+func preRebootFunc(cc *configCache, timeout time.Duration) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		logger := hlog.FromRequest(r)
 		logger.UpdateContext(func(c zerolog.Context) zerolog.Context {
@@ -153,7 +329,7 @@ func preRebootFunc(flMap map[string]fleetlock.FleetLocker, timeout time.Duration
 		// Fetch FleetLock data validated in middleware
 		fld := r.Context().Value(keyFleetLockBody).(fleetlock.FleetLockBody)
 
-		groupLocker, groupExists := flMap[fld.ClientParams.Group]
+		groupLocker, groupExists := cc.getGroupLocker(fld.ClientParams.Group)
 		if !groupExists {
 			logger.Error().Msg("group does not exist in config")
 
@@ -202,7 +378,7 @@ func preRebootFunc(flMap map[string]fleetlock.FleetLocker, timeout time.Duration
 }
 
 // handler called when clients request to release a lock
-func steadyStateFunc(flMap map[string]fleetlock.FleetLocker, timeout time.Duration) http.HandlerFunc {
+func steadyStateFunc(cc *configCache, timeout time.Duration) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		logger := hlog.FromRequest(r)
 		logger.UpdateContext(func(c zerolog.Context) zerolog.Context {
@@ -212,7 +388,7 @@ func steadyStateFunc(flMap map[string]fleetlock.FleetLocker, timeout time.Durati
 		// Fetch FleetLock data validated in middleware
 		fld := r.Context().Value(keyFleetLockBody).(fleetlock.FleetLockBody)
 
-		groupLocker, groupExists := flMap[fld.ClientParams.Group]
+		groupLocker, groupExists := cc.getGroupLocker(fld.ClientParams.Group)
 		if !groupExists {
 			logger.Error().Msg("group does not exist in config")
 
@@ -252,7 +428,7 @@ type lockStatusData struct {
 }
 
 // handler called when clients request lock status
-func lockStatusFunc(flMap map[string]fleetlock.FleetLocker, timeout time.Duration) http.HandlerFunc {
+func lockStatusFunc(cc *configCache, timeout time.Duration) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		logger := hlog.FromRequest(r)
 
@@ -263,7 +439,7 @@ func lockStatusFunc(flMap map[string]fleetlock.FleetLocker, timeout time.Duratio
 		lockerCtx, lockerCancel := context.WithTimeout(r.Context(), timeout)
 		defer lockerCancel()
 
-		for group, locker := range flMap {
+		for group, locker := range cc.getMap() {
 			ls, err := locker.LockStatus(lockerCtx)
 			if err != nil {
 				logger.Err(err).Msgf("unable to get LockStatus for group '%s'", group)
@@ -293,7 +469,140 @@ type staleLocksData struct {
 	Groups     map[string][]string `json:"groups"`
 }
 
-func staleLocksFunc(flMap map[string]fleetlock.FleetLocker, timeout time.Duration, flc fleetLockConfig) http.HandlerFunc {
+type apiError struct {
+	StatusCode int    `json:"status_code" example:"400"`
+	Message    string `json:"message" example:"status bad request"`
+}
+
+// addGroupModel is the expected structure of JSON sent to the addGroup
+// API hander
+type addGroupModel struct {
+	fleetlock.GroupSettings
+	Name string `json:"name" example:"workers"`
+}
+
+// Annotations for generating swagger docs:
+//
+// @Summary     Add a group
+// @Description Add a new FleetLock group
+// @Tags        groups
+// @Accept      json
+// @Param       group body addGroupModel true "Add group"
+// @Success     200
+// @Failure     400 {object} apiError
+// @Router      /groups [post]
+func addGroup(ctx context.Context, flConfiger fleetlock.FleetLockConfiger, agd addGroupModel) error {
+
+	err := flConfiger.AddGroup(ctx, agd.Name, agd.TotalSlots, agd.StaleAge, agd.Permissions)
+	if err != nil {
+		return fmt.Errorf("addGroup: %w", err)
+	}
+
+	return nil
+}
+
+// Annotations for generating swagger docs:
+//
+// @Summary     Delete a group
+// @Description Delete a FleetLock group
+// @Tags        groups
+// @Accept      json
+// @Param       group path string true "Group name"
+// @Success     200
+// @Failure     404 {object} apiError
+// @Router      /groups/{group} [delete]
+func delGroup(ctx context.Context, flConfiger fleetlock.FleetLockConfiger, group string) error {
+
+	err := flConfiger.DelGroup(ctx, group)
+	if err != nil {
+		return fmt.Errorf("delGroup: %w", err)
+	}
+
+	return nil
+}
+
+// apiFunc is the gateway to calling other API functions, this way we do
+// not need to create one middleware chain per request type.
+func apiFunc(cc *configCache, timeout time.Duration, flConfiger fleetlock.FleetLockConfiger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+
+		logger := hlog.FromRequest(r)
+
+		switch r.Method {
+		case "POST":
+
+			ctx, cancel := context.WithTimeout(r.Context(), timeout)
+			defer cancel()
+
+			agd := addGroupModel{}
+			err := json.NewDecoder(r.Body).Decode(&agd)
+			if err != nil {
+				if err == io.EOF {
+					logger.Error().Msg("API body is empty")
+					err = apiSendError(w, "API body is empty", http.StatusBadRequest)
+					if err != nil {
+						logger.Err(err).Msgf("unable to send API error")
+					}
+				} else {
+					logger.Err(err).Msg("failed decoding API body")
+					err = apiSendError(w, "failed decoding API body", http.StatusBadRequest)
+					if err != nil {
+						logger.Err(err).Msgf("unable to send API error")
+					}
+				}
+				return
+			}
+
+			err = addGroup(ctx, flConfiger, agd)
+			if err != nil {
+				message := fmt.Sprintf("unable to add group '%s'", agd.Name)
+				logger.Err(err).Msgf(message)
+				err := apiSendError(w, message, http.StatusBadRequest)
+				if err != nil {
+					logger.Err(err).Msgf("unable to send group add error")
+				}
+			}
+
+		case "DELETE":
+			params := httprouter.ParamsFromContext(r.Context())
+
+			group := params.ByName("group")
+			if !fleetlock.ValidGroup.MatchString(group) {
+				logger.Error().Msg("invalid group name")
+				http.Error(w, "invalid group name", http.StatusBadRequest)
+				return
+			}
+
+			ctx, cancel := context.WithTimeout(r.Context(), timeout)
+			defer cancel()
+
+			err := delGroup(ctx, flConfiger, group)
+			if err != nil {
+				message := fmt.Sprintf("unable to delete group '%s'", group)
+				logger.Err(err).Msgf(message)
+				err := apiSendError(w, message, http.StatusInternalServerError)
+				if err != nil {
+					logger.Err(err).Msgf("unable to send group add error response")
+				}
+			}
+		default:
+			message := fmt.Sprintf("unsupported HTTP method: '%s'", r.Method)
+			logger.Error().Msg(message)
+			err := apiSendError(w, message, http.StatusInternalServerError)
+			if err != nil {
+				logger.Err(err).Msg("unable to send group del error response")
+			}
+			return
+		}
+
+		// At this point everything is OK. Calling WriteHeader is not strictly
+		// needed but it makes sure the zerolog JSON contains
+		// "status":200 instead of "status":0
+		w.WriteHeader(http.StatusOK)
+	}
+}
+
+func staleLocksFunc(cc *configCache, timeout time.Duration) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		logger := hlog.FromRequest(r)
 
@@ -304,7 +613,7 @@ func staleLocksFunc(flMap map[string]fleetlock.FleetLocker, timeout time.Duratio
 		lockerCtx, lockerCancel := context.WithTimeout(r.Context(), timeout)
 		defer lockerCancel()
 
-		for group, locker := range flMap {
+		for group, locker := range cc.getMap() {
 			ls, err := locker.LockStatus(lockerCtx)
 			if err != nil {
 				logger.Err(err).Msgf("unable to get LockStatus for group '%s'", group)
@@ -418,7 +727,7 @@ func ratelimitCleaner(logger zerolog.Logger, rl *rateLimiter) {
 	}
 }
 
-func flBasicAuthMiddleware(flattenedPerms map[string][]byte) alice.Constructor {
+func flBasicAuthMiddleware(cc *configCache) alice.Constructor {
 	return func(h http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			logger := hlog.FromRequest(r)
@@ -448,6 +757,9 @@ func flBasicAuthMiddleware(flattenedPerms map[string][]byte) alice.Constructor {
 			keys := []string{groupWildcardKey, groupIDKey}
 
 			validLogin := false
+
+			flattenedPerms := cc.getPerms()
+
 			for _, key := range keys {
 				expectedPasswordHash, ok := flattenedPerms[key]
 
@@ -485,10 +797,10 @@ func flBasicAuthMiddleware(flattenedPerms map[string][]byte) alice.Constructor {
 	}
 }
 
-func monitorBasicAuthMiddleware(conf monitoringConfig) alice.Constructor {
+func monitorBasicAuthMiddleware(username, password string) alice.Constructor {
 	// Calculate hashes for strings in config at startup
-	expectedUsernameHash := sha256.Sum256([]byte(conf.Username))
-	expectedPasswordHash := sha256.Sum256([]byte(conf.Password))
+	expectedUsernameHash := sha256.Sum256([]byte(username))
+	expectedPasswordHash := sha256.Sum256([]byte(password))
 	return func(h http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			logger := hlog.FromRequest(r)
@@ -581,7 +893,6 @@ func fleetLockValidatorMiddleware() alice.Constructor {
 					err := fleetLockSendError("empty_fleetlock_body", "body is empty", http.StatusBadRequest, w)
 					if err != nil {
 						logger.Err(err).Msg("failed sending empty body error to client")
-						w.WriteHeader(http.StatusInternalServerError)
 						return
 					}
 				} else {
@@ -589,10 +900,8 @@ func fleetLockValidatorMiddleware() alice.Constructor {
 					err := fleetLockSendError("bad_fleetlock_body", "body must contain valid data", http.StatusBadRequest, w)
 					if err != nil {
 						logger.Err(err).Msg("failed sending invalid body error to client")
-						w.WriteHeader(http.StatusInternalServerError)
 						return
 					}
-					http.Error(w, err.Error(), http.StatusBadRequest)
 				}
 				return
 			}
@@ -739,17 +1048,6 @@ func defaultServerConfig() serverConfig {
 			Password:           "changeme",
 			InsecureSkipVerify: false,
 		},
-		FleetLock: fleetLockConfig{
-			"workers": groupSettings{
-				TotalSlots: 1,
-				StaleAge: duration{
-					Duration: time.Second * 3600,
-				},
-				Permissions: map[string]string{
-					"*": "changeme",
-				},
-			},
-		},
 		CertMagic: certMagicConfig{
 			Salt:            "changeme",
 			Password:        "changeme",
@@ -783,11 +1081,16 @@ func newConfig(configFile string) (serverConfig, error) {
 // Flatten permissions from "group" => "id" => "password" to "group-id"
 // => "[]byte(sha256(password))" for easier lookup, and also hash the
 // password for later constant time comparision
-func flattenFleetLockPermissions(flc fleetLockConfig) map[string][]byte {
+func getFlattenedPerms(ctx context.Context, flc fleetlock.FleetLockConfiger) (map[string][]byte, error) {
+
+	flConfig, err := flc.GetConfig(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("unable to initialize FleetLock config")
+	}
 
 	flattenedPerms := map[string][]byte{}
 
-	for group, groupSettings := range flc {
+	for group, groupSettings := range flConfig {
 		for id, password := range groupSettings.Permissions {
 			// We convert the plaintext password to a sha256 hash
 			// because subtle.ConstantTimeCompare requires the input
@@ -801,7 +1104,7 @@ func flattenFleetLockPermissions(flc fleetLockConfig) map[string][]byte {
 		}
 	}
 
-	return flattenedPerms
+	return flattenedPerms, nil
 }
 
 func newLogger(service, hostname string) zerolog.Logger {
@@ -838,8 +1141,6 @@ func Run(configPath string) {
 		logger.Fatal().Err(err).Msg("unable to create server config")
 	}
 
-	flattenedPerms := flattenFleetLockPermissions(conf.FleetLock)
-
 	etcd3TLSConfig := &tls.Config{InsecureSkipVerify: conf.Etcd3.InsecureSkipVerify} // #nosec this is configurable for testing
 
 	etcd3Client, err := newEtcd3Client(conf.Etcd3, etcd3TLSConfig)
@@ -849,12 +1150,34 @@ func Run(configPath string) {
 			Msg("cannot create etcd3 client")
 	}
 
-	flMap, err := newEtcd3FleetLockMap(etcd3Client, conf.FleetLock, logger)
+	// Timeout when interacting with backend like locking/unlocking
+	// a semaphore or other operations.
+	timeout, err := time.ParseDuration("10s")
 	if err != nil {
 		logger.Fatal().
 			Err(err).
-			Msg("cannot create etcd3 locker")
+			Msg("cannot parse duration")
 	}
+
+	flConfigName := "default"
+
+	flConfiger, err := etcd3.NewConfiger(etcd3Client, flConfigName)
+	if err != nil {
+		logger.Fatal().Err(err).Msgf("cannot create FleetLockConfig for '%s'", flConfigName)
+	}
+
+	logger.Info().Msgf("using etcd3 config cache key '%s'", flConfiger.Key())
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	cc, err := newConfigCache(ctx, flConfiger)
+	if err != nil {
+		logger.Fatal().Err(err).Msg("unable to initialize config cache")
+	}
+
+	// run background config cache updater
+	go configCacheUpdater(cc, flConfiger, logger)
 
 	limiter := newIPLimiter()
 
@@ -872,26 +1195,24 @@ func Run(configPath string) {
 	ratelimitingMiddleware := ratelimitMiddleware(conf, limiter)
 
 	// Create middleware chain used for the FleetLock endpoints.
-	fleetLockMiddlewares := newFleetLockMiddlewareChain(hlogMiddlewares, ratelimitingMiddleware, flattenedPerms)
+	fleetLockMiddlewares := newFleetLockMiddlewareChain(hlogMiddlewares, ratelimitingMiddleware, cc)
 
 	// Create middleware chain used for monitoring endpoints
 	monitoringMiddlewares := newMonitoringMiddlewareChain(hlogMiddlewares, ratelimitingMiddleware, conf.Monitoring)
 
-	// Timeout when aquiring or releasing a lock
-	timeout, err := time.ParseDuration("10s")
-	if err != nil {
-		logger.Fatal().
-			Err(err).
-			Msg("cannot parse duration")
-	}
+	// Create middleware chain used for API endpoints
+	apiMiddlewares := newAPIMiddlewareChain(hlogMiddlewares, ratelimitingMiddleware, conf.API)
 
-	preRebootChain := alice.New(fleetLockMiddlewares...).Then(preRebootFunc(flMap, timeout))
-	steadyStateChain := alice.New(fleetLockMiddlewares...).Then(steadyStateFunc(flMap, timeout))
+	// Create middleware chain used for swagger docs endpoint
+	swaggerMiddlewares := newSwaggerMiddlewareChain(hlogMiddlewares)
 
-	lockStatusChain := alice.New(monitoringMiddlewares...).Then(lockStatusFunc(flMap, timeout))
-	staleLocksChain := alice.New(monitoringMiddlewares...).Then(staleLocksFunc(flMap, timeout, conf.FleetLock))
+	preRebootChain := alice.New(fleetLockMiddlewares...).Then(preRebootFunc(cc, timeout))
+	steadyStateChain := alice.New(fleetLockMiddlewares...).Then(steadyStateFunc(cc, timeout))
 
-	router := newRouter(preRebootChain, steadyStateChain, lockStatusChain, staleLocksChain)
+	lockStatusChain := alice.New(monitoringMiddlewares...).Then(lockStatusFunc(cc, timeout))
+	staleLocksChain := alice.New(monitoringMiddlewares...).Then(staleLocksFunc(cc, timeout))
+
+	apiChain := alice.New(apiMiddlewares...).Then(apiFunc(cc, timeout, flConfiger))
 
 	// https://datatracker.ietf.org/doc/rfc9106/
 	// Nonce S, which is a salt for password hashing applications.
@@ -976,6 +1297,36 @@ func Run(configPath string) {
 			Msgf("cannot create tlsconfig %s", service)
 	}
 
+	_, listenPort, err := net.SplitHostPort(conf.Server.Listen)
+	if err != nil {
+		logger.Fatal().Err(err).Msgf("unable to split out port from listen address '%s'", conf.Server.Listen)
+	}
+
+	serviceURLString := conf.CertMagic.Domains[0]
+
+	// Only include the :port if non-default for HTTPS
+	if listenPort != "443" {
+		serviceURLString = serviceURLString + ":" + listenPort
+	}
+	// This path is expected by the http-swagger module
+	swaggerURLString := serviceURLString + "/swagger/doc.json"
+	swaggerURLString = "https://" + swaggerURLString
+
+	// Override default Host string from comments above with where
+	// the server is actually serving the API
+	docs.SwaggerInfo.Host = serviceURLString
+
+	swaggerURL, err := url.Parse(swaggerURLString)
+	if err != nil {
+		logger.Fatal().Err(err).Msgf("unable to parse swagger URL string: '%s'", swaggerURLString)
+	}
+
+	logger.Info().Msgf("using swagger URL '%s'", swaggerURL)
+
+	swaggerChain := alice.New(swaggerMiddlewares...).Then(httpSwagger.Handler(httpSwagger.URL(swaggerURL.String())))
+
+	router := newRouter(preRebootChain, steadyStateChain, lockStatusChain, staleLocksChain, apiChain, swaggerChain)
+
 	srv := &http.Server{
 		Addr:         conf.Server.Listen,
 		Handler:      router,
@@ -1055,13 +1406,13 @@ func newHlogMiddlewareChain(logger zerolog.Logger) []alice.Constructor {
 	return hlogMiddlewares
 }
 
-func newFleetLockMiddlewareChain(hlogMiddlewares []alice.Constructor, ratelimitingMiddleware alice.Constructor, flattenedPerms map[string][]byte) []alice.Constructor {
+func newFleetLockMiddlewareChain(hlogMiddlewares []alice.Constructor, ratelimitingMiddleware alice.Constructor, cc *configCache) []alice.Constructor {
 	// Create middleware chain used for the FleetLock endpoints.
 	fleetLockMiddlewares := []alice.Constructor{}
 	fleetLockMiddlewares = append(fleetLockMiddlewares, hlogMiddlewares...)
 	fleetLockMiddlewares = append(fleetLockMiddlewares, ratelimitingMiddleware)
 	fleetLockMiddlewares = append(fleetLockMiddlewares, fleetLockValidatorMiddleware())
-	fleetLockMiddlewares = append(fleetLockMiddlewares, flBasicAuthMiddleware(flattenedPerms))
+	fleetLockMiddlewares = append(fleetLockMiddlewares, flBasicAuthMiddleware(cc))
 
 	return fleetLockMiddlewares
 }
@@ -1070,24 +1421,25 @@ func newMonitoringMiddlewareChain(hlogMiddlewares []alice.Constructor, ratelimit
 	monitoringMiddlewares := []alice.Constructor{}
 	monitoringMiddlewares = append(monitoringMiddlewares, hlogMiddlewares...)
 	monitoringMiddlewares = append(monitoringMiddlewares, ratelimitingMiddleware)
-	monitoringMiddlewares = append(monitoringMiddlewares, monitorBasicAuthMiddleware(mc))
+	monitoringMiddlewares = append(monitoringMiddlewares, monitorBasicAuthMiddleware(mc.Username, mc.Password))
 
 	return monitoringMiddlewares
 }
 
-func newEtcd3FleetLockMap(etcd3Client *clientv3.Client, flc fleetLockConfig, logger zerolog.Logger) (map[string]fleetlock.FleetLocker, error) {
-	flMap := map[string]fleetlock.FleetLocker{}
+func newAPIMiddlewareChain(hlogMiddlewares []alice.Constructor, ratelimitingMiddleware alice.Constructor, ac apiConfig) []alice.Constructor {
+	apiMiddlewares := []alice.Constructor{}
+	apiMiddlewares = append(apiMiddlewares, hlogMiddlewares...)
+	apiMiddlewares = append(apiMiddlewares, ratelimitingMiddleware)
+	apiMiddlewares = append(apiMiddlewares, monitorBasicAuthMiddleware(ac.Username, ac.Password))
 
-	for group, settings := range flc {
-		logger.Info().Msgf("configuring group '%s' with total slots: %d", group, settings.TotalSlots)
-		el, err := etcd3.NewLocker(etcd3Client, group, settings.TotalSlots, settings.StaleAge.Duration)
-		if err != nil {
-			return nil, fmt.Errorf("newFleetLockMap: %w", err)
-		}
-		flMap[group] = el
-	}
+	return apiMiddlewares
+}
 
-	return flMap, nil
+func newSwaggerMiddlewareChain(hlogMiddlewares []alice.Constructor) []alice.Constructor {
+	swaggerMiddlewares := []alice.Constructor{}
+	swaggerMiddlewares = append(swaggerMiddlewares, hlogMiddlewares...)
+
+	return swaggerMiddlewares
 }
 
 func newEtcd3Client(conf etcd3config, tlsConfig *tls.Config) (*clientv3.Client, error) {
@@ -1108,13 +1460,16 @@ func newEtcd3Client(conf etcd3config, tlsConfig *tls.Config) (*clientv3.Client, 
 	return etcd3Client, nil
 }
 
-func newRouter(preRebootChain, steadyStateChain, lockStatusChain, staleLocksChain http.Handler) *httprouter.Router {
+func newRouter(preRebootChain, steadyStateChain, lockStatusChain, staleLocksChain, apiChain http.Handler, swaggerChain http.Handler) *httprouter.Router {
 	router := httprouter.New()
 
 	router.Handler("POST", "/v1/pre-reboot", preRebootChain)
 	router.Handler("POST", "/v1/steady-state", steadyStateChain)
 	router.Handler("GET", "/lock-status", lockStatusChain)
 	router.Handler("GET", "/stale-locks", staleLocksChain)
+	router.Handler("POST", "/api/v1/groups", apiChain)
+	router.Handler("DELETE", "/api/v1/groups/:group", apiChain)
+	router.Handler("GET", "/swagger/*any", swaggerChain)
 
 	return router
 }
