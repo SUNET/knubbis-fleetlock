@@ -9,6 +9,7 @@ import (
 
 	"github.com/SUNET/knubbis-fleetlock/fleetlock"
 	"github.com/rs/zerolog"
+	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"golang.org/x/exp/slices"
 )
@@ -270,23 +271,51 @@ func NewConfiger(client *clientv3.Client, configName string) (*Etcd3Config, erro
 // supplied version number. This ensures that two simultanous writers
 // will not overwrite eachother. Only the one handled first will
 // succeed, and the other one will fail as its version is no longer
-// valid, requring a new read of the value.
-func (ec *Etcd3Config) atomicConfigWrite(ctx context.Context, cData fleetlock.FleetLockConfig, version int64) error {
+// valid, requring a new read of the value. The handler also supports
+// cleaning up a related semaphore when removing a group, if the string
+// is not empty
+func (ec *Etcd3Config) atomicConfigWrite(ctx context.Context, logger *zerolog.Logger, cData fleetlock.FleetLockConfig, version int64, delSemKey string) error {
 	b, err := json.Marshal(cData)
 	if err != nil {
 		return fmt.Errorf("atomicConfigWrite: unable to marshal JSON: %w", err)
 	}
 
-	txnResp, err := ec.client.Txn(ctx).
-		If(clientv3.Compare(clientv3.Version(ec.key), "=", version)).
-		Then(clientv3.OpPut(ec.key, string(b))).
-		Commit()
+	txn := ec.client.Txn(ctx)
+	txn = txn.If(clientv3.Compare(clientv3.Version(ec.key), "=", version))
+
+	// If a semaphore key was supplied we delete this inside the
+	// same transaction
+	if delSemKey != "" {
+		txn = txn.Then(clientv3.OpPut(ec.key, string(b)), clientv3.OpDelete(delSemKey))
+	} else {
+		txn = txn.Then(clientv3.OpPut(ec.key, string(b)))
+	}
+
+	txnResp, err := txn.Commit()
 	if err != nil {
 		return fmt.Errorf("atomicConfigWrite: unable to commit config key '%s': %w", ec.key, err)
 	}
 
 	if !txnResp.Succeeded {
 		return fmt.Errorf("atomicConfigWrite: transaction writing config failed")
+	}
+
+	// Do some extra verification for the responses
+	for _, response := range txnResp.Responses {
+		switch op := response.Response.(type) {
+		case *etcdserverpb.ResponseOp_ResponsePut:
+		case *etcdserverpb.ResponseOp_ResponseDeleteRange:
+			// If no locks have been taken in the group
+			// there is no semaphore key to delete because
+			// it has not been created yet, but more than 1
+			// is strange:
+			if op.ResponseDeleteRange.Deleted > 1 {
+				return fmt.Errorf("atomicConfigWrite: unexpected number of keys deleted: %d", op.ResponseDeleteRange.Deleted)
+			}
+		default:
+			return fmt.Errorf("found unexpected op type '%T'", op)
+		}
+
 	}
 	return nil
 }
@@ -369,7 +398,7 @@ func (ec *Etcd3Config) AddGroup(ctx context.Context, group string, totalSlots in
 		}
 
 		// We expect the value to be created (version 0)
-		err := ec.atomicConfigWrite(ctx, flc, 0)
+		err := ec.atomicConfigWrite(ctx, logger, flc, 0, "")
 		if err != nil {
 			return fmt.Errorf("AddGroup: error creating config: %w", err)
 		}
@@ -397,7 +426,7 @@ func (ec *Etcd3Config) AddGroup(ctx context.Context, group string, totalSlots in
 			Permissions: permissions,
 		}
 
-		err = ec.atomicConfigWrite(ctx, flc, s.Kvs[0].Version)
+		err = ec.atomicConfigWrite(ctx, logger, flc, s.Kvs[0].Version, "")
 		if err != nil {
 			return fmt.Errorf("AddGroup: error adding group '%s' to config: %w", group, err)
 		}
@@ -442,21 +471,12 @@ func (ec *Etcd3Config) DelGroup(ctx context.Context, group string) error {
 		// Delete the group config
 		delete(flc, group)
 
-		err = ec.atomicConfigWrite(ctx, flc, s.Kvs[0].Version)
-		if err != nil {
-			return fmt.Errorf("DelGroup: error deleting group '%s' from config: %w", group, err)
-		}
-
 		// Cleanup related semaphore
 		semaphoreKey := groupSemaphorePath(group)
 
-		dr, err := ec.client.Delete(ctx, semaphoreKey)
+		err = ec.atomicConfigWrite(ctx, logger, flc, s.Kvs[0].Version, semaphoreKey)
 		if err != nil {
-			return fmt.Errorf("DelGroup: Delete semaphore key '%s': %w", semaphoreKey, err)
-		}
-
-		if dr.Deleted != 1 {
-			return fmt.Errorf("DelGroup: unexpected number of delete entries: %d", dr.Deleted)
+			return fmt.Errorf("DelGroup: error deleting group '%s' from config: %w", group, err)
 		}
 
 		return nil
