@@ -98,19 +98,23 @@ func (le *RecursiveLockError) Error() string {
 
 type FleetLockConfig map[string]GroupSettings
 
+// Settings that look the same before and after hashing
+type CommonGroupSettings struct {
+	TotalSlots int      `json:"total_slots" example:"1"`
+	StaleAge   Duration `json:"stale_age" swaggertype:"string" example:"1h"`
+}
+
 // "example" and "swaggerype" tags are used by swaggo/swag for creating
 // docs
 type GroupSettings struct {
-	TotalSlots  int               `json:"total_slots" example:"1"`
-	StaleAge    Duration          `json:"stale_age" swaggertype:"string" example:"1h"`
+	CommonGroupSettings
 	Permissions map[string]string `json:"permissions" example:"*:changeme"`
 }
 
 type FleetLockHashedConfig map[string]HashedGroupSettings
 
 type HashedGroupSettings struct {
-	TotalSlots        int                               `json:"total_slots" example:"1"`
-	StaleAge          Duration                          `json:"stale_age" swaggertype:"string" example:"1h"`
+	CommonGroupSettings
 	HashedPermissions map[string]hashing.HashedPassword `json:"permissions" example:"*:changeme"`
 }
 
@@ -138,8 +142,10 @@ func NewHashedConfig(flc FleetLockConfig) (FleetLockHashedConfig, error) {
 		}
 
 		flhc[group] = HashedGroupSettings{
-			TotalSlots:        settings.TotalSlots,
-			StaleAge:          settings.StaleAge,
+			CommonGroupSettings: CommonGroupSettings{
+				TotalSlots: settings.TotalSlots,
+				StaleAge:   settings.StaleAge,
+			},
 			HashedPermissions: hashedPerms,
 		}
 	}

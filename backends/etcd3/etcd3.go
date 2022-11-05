@@ -392,8 +392,10 @@ func (ec *Etcd3Config) AddGroup(ctx context.Context, group string, totalSlots in
 		logger.Info().Msgf("adding group '%s' to config", group)
 		flc := fleetlock.FleetLockConfig{
 			group: fleetlock.GroupSettings{
-				TotalSlots:  totalSlots,
-				StaleAge:    staleAge,
+				CommonGroupSettings: fleetlock.CommonGroupSettings{
+					TotalSlots: totalSlots,
+					StaleAge:   staleAge,
+				},
 				Permissions: permissions,
 			},
 		}
@@ -432,8 +434,10 @@ func (ec *Etcd3Config) AddGroup(ctx context.Context, group string, totalSlots in
 
 		// Add the group config
 		flhc[group] = fleetlock.HashedGroupSettings{
-			TotalSlots:        totalSlots,
-			StaleAge:          staleAge,
+			CommonGroupSettings: fleetlock.CommonGroupSettings{
+				TotalSlots: totalSlots,
+				StaleAge:   staleAge,
+			},
 			HashedPermissions: hashedPerms,
 		}
 

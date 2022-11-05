@@ -91,9 +91,11 @@ func TestFleetLockHandlers(t *testing.T) {
 
 	flConfig := fleetlock.FleetLockConfig{
 		"workers": fleetlock.GroupSettings{
-			TotalSlots: 1,
-			StaleAge: fleetlock.Duration{
-				Duration: time.Second * 3600,
+			CommonGroupSettings: fleetlock.CommonGroupSettings{
+				TotalSlots: 1,
+				StaleAge: fleetlock.Duration{
+					Duration: time.Second * 3600,
+				},
 			},
 			Permissions: map[string]string{
 				"*": "changeme",
