@@ -1215,11 +1215,31 @@ func Run(configPath string) {
 	apiChain := alice.New(apiMiddlewares...).Then(apiFunc(cc, timeout, flConfiger))
 
 	// https://datatracker.ietf.org/doc/rfc9106/
-	// Nonce S, which is a salt for password hashing applications.
-	// It MUST have a length not greater than 2^(32)-1 bytes.  16
-	// bytes is RECOMMENDED for password hashing.  The salt SHOULD
-	// be unique for each password
-	//salt, err := hex.DecodeString("287c5a555f4ce4e2c86cca3887ba02b8")
+	// ===
+	// If much less memory is available, a uniformly safe option is
+	// Argon2id with t=3 iterations, p=4 lanes, m=2^(16) (64 MiB of
+	// RAM), 128-bit salt, and 256-bit tag size.  This is the SECOND
+	// RECOMMENDED option.
+	// [...]
+	// The Argon2id variant with t=1 and 2 GiB memory is the FIRST
+	// RECOMMENDED option and is suggested as a default setting for
+	// all environments.  This setting is secure against
+	// side-channel attacks and maximizes adversarial costs on
+	// dedicated brute-force hardware. The Argon2id variant with t=3
+	// and 64 MiB memory is the SECOND RECOMMENDED option and is
+	// suggested as a default setting for memory- constrained
+	// environments.
+	// ===
+	//
+	// Use the "SECOND RECOMMENDED" settings because we are
+	// probably running in a memory constrained container:
+	// t=3 iterations
+	argonTime := uint32(3)
+	// p=4 lanes
+	argonThreads := uint8(4)
+	// m=2^(16) (64 MiB of RAM)
+	argonMemory := uint32(64 * 1024)
+	// 128-bit salt (== 16 bytes == 32 hexadecimal chararacters)
 	if len(conf.CertMagic.Salt) != 32 {
 		logger.Fatal().
 			Err(errors.New("invalid salt")).
@@ -1230,28 +1250,10 @@ func Run(configPath string) {
 		logger.Fatal().Err(err).Msg("cannot decode salt hex")
 	}
 
-	// https://datatracker.ietf.org/doc/rfc9106/
-	// The Argon2id variant with t=1 and 2 GiB memory is the FIRST
-	// RECOMMENDED option and is suggested as a default setting for
-	// all environments.  This setting is secure against
-	// side-channel attacks and maximizes adversarial costs on
-	// dedicated brute-force hardware. The Argon2id variant with t=3
-	// and 64 MiB memory is the SECOND RECOMMENDED option and is
-	// suggested as a default setting for memory- constrained
-	// environments.
-	//
 	// AES-256 needs a 32 byte-key
+	argonKeyLen := uint32(32)
 
-	// I guess it is possible to run on a machine with over 255
-	// cores these days, so just be sure we do not wrap the uint8:
-	var argonThreads uint8
-	if runtime.NumCPU() > 255 {
-		argonThreads = 255
-	} else {
-		argonThreads = uint8(runtime.NumCPU())
-	}
-
-	key := argon2.IDKey([]byte(conf.CertMagic.Password), salt, 3, 64*1024, argonThreads, 32)
+	key := argon2.IDKey([]byte(conf.CertMagic.Password), salt, argonTime, argonMemory, argonThreads, argonKeyLen)
 
 	// Persist certmagic data in etcd3
 	cmStorage := etcd3storage.New(etcd3Client, conf.CertMagic.Etcd3Path, key, logger)
