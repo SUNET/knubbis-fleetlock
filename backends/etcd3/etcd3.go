@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/SUNET/knubbis-fleetlock/fleetlock"
+	"github.com/SUNET/knubbis-fleetlock/hashing"
 	"github.com/rs/zerolog"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -274,8 +275,8 @@ func NewConfiger(client *clientv3.Client, configName string) (*Etcd3Config, erro
 // valid, requring a new read of the value. The handler also supports
 // cleaning up a related semaphore when removing a group, if the string
 // is not empty
-func (ec *Etcd3Config) atomicConfigWrite(ctx context.Context, logger *zerolog.Logger, cData fleetlock.FleetLockConfig, version int64, delSemKey string) error {
-	b, err := json.Marshal(cData)
+func (ec *Etcd3Config) atomicConfigWrite(ctx context.Context, logger *zerolog.Logger, flhc fleetlock.FleetLockHashedConfig, version int64, delSemKey string) error {
+	b, err := json.Marshal(flhc)
 	if err != nil {
 		return fmt.Errorf("atomicConfigWrite: unable to marshal JSON: %w", err)
 	}
@@ -320,32 +321,32 @@ func (ec *Etcd3Config) atomicConfigWrite(ctx context.Context, logger *zerolog.Lo
 	return nil
 }
 
-func (ec *Etcd3Config) GetConfig(ctx context.Context) (fleetlock.FleetLockConfig, error) {
+func (ec *Etcd3Config) GetConfig(ctx context.Context) (fleetlock.FleetLockHashedConfig, error) {
 	// Fetch config data (which may not exist yet)
 	s, err := ec.client.Get(ctx, ec.key)
 	if err != nil {
-		return fleetlock.FleetLockConfig{}, fmt.Errorf("GetConfig: Get key: %w", err)
+		return fleetlock.FleetLockHashedConfig{}, fmt.Errorf("GetConfig: Get key: %w", err)
 	}
 
 	logger := zerolog.Ctx(ctx)
 
 	switch numKvs := len(s.Kvs); numKvs {
 	case 0:
-		// No config exists, return empty one
+		// No config exists, return empty config
 		logger.Info().Msg("returning empty config from etcd3")
-		return fleetlock.FleetLockConfig{}, nil
+		return fleetlock.FleetLockHashedConfig{}, nil
 	case 1:
 		// The config data exists, return it
-		cData := fleetlock.FleetLockConfig{}
-		err := json.Unmarshal(s.Kvs[0].Value, &cData)
+		flhc := fleetlock.FleetLockHashedConfig{}
+		err := json.Unmarshal(s.Kvs[0].Value, &flhc)
 		if err != nil {
-			return fleetlock.FleetLockConfig{}, fmt.Errorf("GetConfig: unable to marshal KV value: %w", err)
+			return fleetlock.FleetLockHashedConfig{}, fmt.Errorf("GetConfig: unable to marshal KV storage value: %w", err)
 		}
 
 		logger.Info().Msg("returning config from etcd3")
-		return cData, nil
+		return flhc, nil
 	default:
-		return fleetlock.FleetLockConfig{}, fmt.Errorf("RecursiveLock: unexpected number KVs in response: %d", len(s.Kvs))
+		return fleetlock.FleetLockHashedConfig{}, fmt.Errorf("RecursiveLock: unexpected number KVs in response: %d", len(s.Kvs))
 	}
 }
 
@@ -397,8 +398,13 @@ func (ec *Etcd3Config) AddGroup(ctx context.Context, group string, totalSlots in
 			},
 		}
 
+		flhc, err := fleetlock.NewHashedConfig(flc)
+		if err != nil {
+			return fmt.Errorf("AddGroup: %w", err)
+		}
+
 		// We expect the value to be created (version 0)
-		err := ec.atomicConfigWrite(ctx, logger, flc, 0, "")
+		err = ec.atomicConfigWrite(ctx, logger, flhc, 0, "")
 		if err != nil {
 			return fmt.Errorf("AddGroup: error creating config: %w", err)
 		}
@@ -407,26 +413,31 @@ func (ec *Etcd3Config) AddGroup(ctx context.Context, group string, totalSlots in
 	case 1:
 		// The config data exists, add the group if it does
 		// not exist in the data
-		flc := fleetlock.FleetLockConfig{}
-		err := json.Unmarshal(s.Kvs[0].Value, &flc)
+		flhc := fleetlock.FleetLockHashedConfig{}
+		err := json.Unmarshal(s.Kvs[0].Value, &flhc)
 		if err != nil {
 			return fmt.Errorf("AddGroup: unable to marshal KV value: %w", err)
 		}
 
-		_, exists := flc[group]
+		_, exists := flhc[group]
 
 		if exists {
 			return fmt.Errorf("AddGroup: group '%s' already exists", group)
 		}
 
-		// Add the group config
-		flc[group] = fleetlock.GroupSettings{
-			TotalSlots:  totalSlots,
-			StaleAge:    staleAge,
-			Permissions: permissions,
+		hashedPerms, err := hashing.HashPermissionPasswords(permissions)
+		if err != nil {
+			return fmt.Errorf("AddGroup: unable to hash perms: %w", err)
 		}
 
-		err = ec.atomicConfigWrite(ctx, logger, flc, s.Kvs[0].Version, "")
+		// Add the group config
+		flhc[group] = fleetlock.HashedGroupSettings{
+			TotalSlots:        totalSlots,
+			StaleAge:          staleAge,
+			HashedPermissions: hashedPerms,
+		}
+
+		err = ec.atomicConfigWrite(ctx, logger, flhc, s.Kvs[0].Version, "")
 		if err != nil {
 			return fmt.Errorf("AddGroup: error adding group '%s' to config: %w", group, err)
 		}
@@ -456,25 +467,25 @@ func (ec *Etcd3Config) DelGroup(ctx context.Context, group string) error {
 	case 1:
 		// The config data exists, delete the group if it exists
 		// in the data
-		flc := fleetlock.FleetLockConfig{}
-		err := json.Unmarshal(s.Kvs[0].Value, &flc)
+		flhc := fleetlock.FleetLockHashedConfig{}
+		err := json.Unmarshal(s.Kvs[0].Value, &flhc)
 		if err != nil {
 			return fmt.Errorf("DelGroup: unable to marshal KV value: %w", err)
 		}
 
-		_, exists := flc[group]
+		_, exists := flhc[group]
 
 		if !exists {
 			return fmt.Errorf("DelGroup: group '%s' does not exist", group)
 		}
 
 		// Delete the group config
-		delete(flc, group)
+		delete(flhc, group)
 
 		// Cleanup related semaphore
 		semaphoreKey := groupSemaphorePath(group)
 
-		err = ec.atomicConfigWrite(ctx, logger, flc, s.Kvs[0].Version, semaphoreKey)
+		err = ec.atomicConfigWrite(ctx, logger, flhc, s.Kvs[0].Version, semaphoreKey)
 		if err != nil {
 			return fmt.Errorf("DelGroup: error deleting group '%s' from config: %w", group, err)
 		}

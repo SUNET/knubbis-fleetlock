@@ -17,6 +17,9 @@ insecure_skip_verify = false
 
 [certmagic]
 salt = "36023a78c7d2000ac58604da1b630a9e"
+argon_time = 3
+argon_memory = 65536
+argon_threads = 4
 password = "changeme"
 etcd3_path = "com.example.fleetlock/certmagic"
 letsencrypt_prod = false

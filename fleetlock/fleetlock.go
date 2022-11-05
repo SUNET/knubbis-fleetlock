@@ -3,8 +3,11 @@ package fleetlock
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"regexp"
 	"time"
+
+	"github.com/SUNET/knubbis-fleetlock/hashing"
 )
 
 // The core operations implemented by a FleetLock backend
@@ -103,10 +106,43 @@ type GroupSettings struct {
 	Permissions map[string]string `json:"permissions" example:"*:changeme"`
 }
 
+type FleetLockHashedConfig map[string]HashedGroupSettings
+
+type HashedGroupSettings struct {
+	TotalSlots        int                               `json:"total_slots" example:"1"`
+	StaleAge          Duration                          `json:"stale_age" swaggertype:"string" example:"1h"`
+	HashedPermissions map[string]hashing.HashedPassword `json:"permissions" example:"*:changeme"`
+}
+
+type HashedPassword struct {
+	Hash []byte
+	Salt []byte
+}
+
 type FleetLockConfiger interface {
-	GetConfig(ctx context.Context) (FleetLockConfig, error)
+	GetConfig(ctx context.Context) (FleetLockHashedConfig, error)
 	GetLockers(ctx context.Context) (map[string]FleetLocker, error)
 	GetNotifierChan(ctx context.Context) (interface{}, error)
 	AddGroup(ctx context.Context, group string, totalSlots int, staleAge Duration, permissions map[string]string) error
 	DelGroup(ctx context.Context, group string) error
+}
+
+func NewHashedConfig(flc FleetLockConfig) (FleetLockHashedConfig, error) {
+
+	flhc := map[string]HashedGroupSettings{}
+
+	for group, settings := range flc {
+		hashedPerms, err := hashing.HashPermissionPasswords(settings.Permissions)
+		if err != nil {
+			return FleetLockHashedConfig{}, fmt.Errorf("newFlcStorage: %w", err)
+		}
+
+		flhc[group] = HashedGroupSettings{
+			TotalSlots:        settings.TotalSlots,
+			StaleAge:          settings.StaleAge,
+			HashedPermissions: hashedPerms,
+		}
+	}
+
+	return flhc, nil
 }

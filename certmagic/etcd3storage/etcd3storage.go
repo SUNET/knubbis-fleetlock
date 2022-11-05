@@ -198,13 +198,13 @@ func (s *Etcd3Storage) decryptStorageData(keyPath string, encryptedMsg []byte) (
 	// Decrypt data and return the value
 	block, err := aes.NewCipher(s.aesKey)
 	if err != nil {
-		s.logger.Debug().Msgf("decryptStorageData(): keyPath: %s, unable to create cipher", keyPath)
+		s.logger.Err(err).Msgf("decryptStorageData(): keyPath: %s, unable to create cipher", keyPath)
 		return nil, err
 	}
 
 	aesgcm, err := cipher.NewGCM(block)
 	if err != nil {
-		s.logger.Debug().Msgf("decryptStorageData(): keyPath: %s, unable to create GCM", keyPath)
+		s.logger.Err(err).Msgf("decryptStorageData(): keyPath: %s, unable to create GCM", keyPath)
 		return nil, err
 	}
 
@@ -214,7 +214,7 @@ func (s *Etcd3Storage) decryptStorageData(keyPath string, encryptedMsg []byte) (
 
 	plaintextBytes, err := aesgcm.Open(nil, nonce, ciphertext, nil)
 	if err != nil {
-		s.logger.Debug().Msgf("decryptStorageData(): keyPath: %s, unable to decrypt etcd3 value", keyPath)
+		s.logger.Err(err).Msgf("decryptStorageData(): keyPath: %s, unable to decrypt etcd3 value", keyPath)
 		return nil, err
 	}
 

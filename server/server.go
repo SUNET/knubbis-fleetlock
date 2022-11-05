@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"crypto/tls"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,6 +26,7 @@ import (
 	"github.com/SUNET/knubbis-fleetlock/backends/etcd3"
 	"github.com/SUNET/knubbis-fleetlock/certmagic/etcd3storage"
 	"github.com/SUNET/knubbis-fleetlock/fleetlock"
+	"github.com/SUNET/knubbis-fleetlock/hashing"
 	"github.com/SUNET/knubbis-fleetlock/server/docs"
 	"github.com/caddyserver/certmagic"
 	"github.com/julienschmidt/httprouter"
@@ -37,7 +37,6 @@ import (
 	"github.com/rs/zerolog/hlog"
 	httpSwagger "github.com/swaggo/http-swagger"
 	clientv3 "go.etcd.io/etcd/client/v3"
-	"golang.org/x/crypto/argon2"
 	"golang.org/x/time/rate"
 )
 
@@ -68,7 +67,7 @@ var version = "unspecified"
 // that struct methods take suitable locks when doing operations.
 type configCache struct {
 	flMap          map[string]fleetlock.FleetLocker
-	flattenedPerms map[string][]byte
+	flattenedPerms map[string]hashing.HashedPassword
 	mutex          *sync.RWMutex
 }
 
@@ -154,19 +153,19 @@ func (cc *configCache) setLockerMap(flm map[string]fleetlock.FleetLocker) {
 	cc.flMap = flm
 }
 
-func (cc *configCache) setPerms(flattenedPerms map[string][]byte) {
+func (cc *configCache) setPerms(flattenedPerms map[string]hashing.HashedPassword) {
 	cc.mutex.Lock()
 	defer cc.mutex.Unlock()
 
 	cc.flattenedPerms = flattenedPerms
 }
 
-func (cc *configCache) getPerms() map[string][]byte {
+func (cc *configCache) getPerms() map[string]hashing.HashedPassword {
 	cc.mutex.RLock()
 	defer cc.mutex.RUnlock()
 
 	// Create copy while holding the lock
-	mCopy := map[string][]byte{}
+	mCopy := map[string]hashing.HashedPassword{}
 	for k, v := range cc.flattenedPerms {
 		mCopy[k] = v
 	}
@@ -263,6 +262,9 @@ type etcd3config struct {
 
 type certMagicConfig struct {
 	Salt            string
+	ArgonTime       uint32 `toml:"argon_time"`
+	ArgonMemory     uint32 `toml:"argon_memory"`
+	ArgonThreads    uint8  `toml:"argon_threads"`
 	Password        string
 	Etcd3Path       string `toml:"etcd3_path"`
 	LetsEncryptProd bool   `toml:"letsencrypt_prod"`
@@ -768,15 +770,24 @@ func flBasicAuthMiddleware(cc *configCache) alice.Constructor {
 					continue
 				}
 
-				// The API passwords in the config are hashed at
-				// startup, now hash the client supplied password so
-				// we can compare strings of equal length with
+				// The API passwords in the config are
+				// stored argon2 hashed in the database.
+				// Now hash the client supplied password
+				// so we can compare strings of equal
+				// length with
 				// subtle.ConstantTimeCompare()
-				passwordHash := sha256.Sum256([]byte(password))
+				hashedPassword := hashing.GetHashedPassword(
+					password,
+					expectedPasswordHash.Salt,
+					expectedPasswordHash.ArgonTime,
+					expectedPasswordHash.ArgonMemory,
+					expectedPasswordHash.ArgonThreads,
+					expectedPasswordHash.ArgonHashSize,
+				)
 
 				// Use subtle.ConstantTimeCompare() in an attempt to
 				// not leak password contents via timing attack
-				passwordMatch := (subtle.ConstantTimeCompare(passwordHash[:], expectedPasswordHash) == 1)
+				passwordMatch := (subtle.ConstantTimeCompare(hashedPassword.Hash, expectedPasswordHash.Hash) == 1)
 
 				if passwordMatch {
 					validLogin = true
@@ -1081,26 +1092,18 @@ func newConfig(configFile string) (serverConfig, error) {
 // Flatten permissions from "group" => "id" => "password" to "group-id"
 // => "[]byte(sha256(password))" for easier lookup, and also hash the
 // password for later constant time comparision
-func getFlattenedPerms(ctx context.Context, flc fleetlock.FleetLockConfiger) (map[string][]byte, error) {
+func getFlattenedPerms(ctx context.Context, flc fleetlock.FleetLockConfiger) (map[string]hashing.HashedPassword, error) {
 
 	flConfig, err := flc.GetConfig(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("unable to initialize FleetLock config")
 	}
 
-	flattenedPerms := map[string][]byte{}
+	flattenedPerms := map[string]hashing.HashedPassword{}
 
 	for group, groupSettings := range flConfig {
-		for id, password := range groupSettings.Permissions {
-			// We convert the plaintext password to a sha256 hash
-			// because subtle.ConstantTimeCompare requires the input
-			// strings being compared to be of the same length.
-			hashedPassword := sha256.Sum256([]byte(password))
-			// subtle.ConstantTimeCompare also requires a
-			// []byte slice while sha256.Sum256() returns a
-			// [32]byte array, so create a slice based on
-			// the array:
-			flattenedPerms[group+"-"+id] = hashedPassword[:]
+		for id, hashedPassword := range groupSettings.HashedPermissions {
+			flattenedPerms[group+"-"+id] = hashedPassword
 		}
 	}
 
@@ -1214,46 +1217,28 @@ func Run(configPath string) {
 
 	apiChain := alice.New(apiMiddlewares...).Then(apiFunc(cc, timeout, flConfiger))
 
-	// https://datatracker.ietf.org/doc/rfc9106/
-	// ===
-	// If much less memory is available, a uniformly safe option is
-	// Argon2id with t=3 iterations, p=4 lanes, m=2^(16) (64 MiB of
-	// RAM), 128-bit salt, and 256-bit tag size.  This is the SECOND
-	// RECOMMENDED option.
-	// [...]
-	// The Argon2id variant with t=1 and 2 GiB memory is the FIRST
-	// RECOMMENDED option and is suggested as a default setting for
-	// all environments.  This setting is secure against
-	// side-channel attacks and maximizes adversarial costs on
-	// dedicated brute-force hardware. The Argon2id variant with t=3
-	// and 64 MiB memory is the SECOND RECOMMENDED option and is
-	// suggested as a default setting for memory- constrained
-	// environments.
-	// ===
-	//
-	// Use the "SECOND RECOMMENDED" settings because we are
-	// probably running in a memory constrained container:
-	// t=3 iterations
-	argonTime := uint32(3)
-	// p=4 lanes
-	argonThreads := uint8(4)
-	// m=2^(16) (64 MiB of RAM)
-	argonMemory := uint32(64 * 1024)
-	// 128-bit salt (== 16 bytes == 32 hexadecimal chararacters)
 	if len(conf.CertMagic.Salt) != 32 {
 		logger.Fatal().
 			Err(errors.New("invalid salt")).
 			Msg("certmagic salt must be 32 hex characters long")
 	}
-	salt, err := hex.DecodeString(conf.CertMagic.Salt)
+	salt, err := hashing.SaltFromHex(conf.CertMagic.Salt)
 	if err != nil {
 		logger.Fatal().Err(err).Msg("cannot decode salt hex")
 	}
 
 	// AES-256 needs a 32 byte-key
-	argonKeyLen := uint32(32)
+	AESKeyLen := uint32(32)
+	hashedPassword := hashing.GetHashedPassword(
+		conf.CertMagic.Password,
+		salt,
+		conf.CertMagic.ArgonTime,
+		conf.CertMagic.ArgonMemory,
+		conf.CertMagic.ArgonThreads,
+		AESKeyLen,
+	)
 
-	key := argon2.IDKey([]byte(conf.CertMagic.Password), salt, argonTime, argonMemory, argonThreads, argonKeyLen)
+	key := hashedPassword.Hash
 
 	// Persist certmagic data in etcd3
 	cmStorage := etcd3storage.New(etcd3Client, conf.CertMagic.Etcd3Path, key, logger)
