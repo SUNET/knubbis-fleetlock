@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/SUNET/knubbis-fleetlock/fleetlock"
+	lru "github.com/hashicorp/golang-lru"
 	"github.com/justinas/alice"
 	"golang.org/x/time/rate"
 	//"go.etcd.io/etcd/client/v3/mock/mockserver"
@@ -335,8 +336,13 @@ func TestFleetLockHandlers(t *testing.T) {
 			logger.Fatal().Err(err).Msg("unable to initialize config cache")
 		}
 
+		loginCache, err := lru.New(128)
+		if err != nil {
+			logger.Fatal().Err(err).Msg("unable to initialize login LRU cache")
+		}
+
 		// Create middleware chain used for the FleetLock endpoints.
-		fleetLockMiddlewares := newFleetLockMiddlewareChain(hlogMiddlewares, ratelimitingMiddleware, cc)
+		fleetLockMiddlewares := newFleetLockMiddlewareChain(hlogMiddlewares, ratelimitingMiddleware, cc, loginCache)
 		timeout := time.Second * 3
 
 		preRebootChain := alice.New(fleetLockMiddlewares...).Then(preRebootFunc(cc, timeout))

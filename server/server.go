@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,6 +30,7 @@ import (
 	"github.com/SUNET/knubbis-fleetlock/hashing"
 	"github.com/SUNET/knubbis-fleetlock/server/docs"
 	"github.com/caddyserver/certmagic"
+	lru "github.com/hashicorp/golang-lru"
 	"github.com/julienschmidt/httprouter"
 	"github.com/justinas/alice"
 	"github.com/libdns/acmedns"
@@ -92,7 +94,7 @@ func newConfigCache(ctx context.Context, flConfiger fleetlock.FleetLockConfiger)
 
 // runs in a go routine in the background and updates the configCache struct
 // if something changes
-func configCacheUpdater(cc *configCache, flConfiger fleetlock.FleetLockConfiger, logger zerolog.Logger) {
+func configCacheUpdater(cc *configCache, flConfiger fleetlock.FleetLockConfiger, logger zerolog.Logger, loginCache *lru.Cache) {
 
 	chanInterface, err := flConfiger.GetNotifierChan(context.Background())
 	if err != nil {
@@ -108,13 +110,13 @@ func configCacheUpdater(cc *configCache, flConfiger fleetlock.FleetLockConfiger,
 			select {
 			case res := <-ch:
 				logger.Info().Msgf("notified by '%s' event on etcd3 watcher, updating config cache", res.Events[0].Type)
-				err := updateConfigCache(cc, flConfiger)
+				err := updateConfigCache(cc, logger, flConfiger, loginCache)
 				if err != nil {
-					logger.Err(err).Msg("unable to updat config cache")
+					logger.Err(err).Msg("unable to update config cache")
 				}
 			case <-time.After(time.Second * 300):
 				logger.Info().Msgf("no events seen before timeout value, updating config cache just in case")
-				err := updateConfigCache(cc, flConfiger)
+				err := updateConfigCache(cc, logger, flConfiger, loginCache)
 				if err != nil {
 					logger.Err(err).Msg("unable to update config cache")
 				}
@@ -127,7 +129,7 @@ func configCacheUpdater(cc *configCache, flConfiger fleetlock.FleetLockConfiger,
 	}
 }
 
-func updateConfigCache(cc *configCache, flConfiger fleetlock.FleetLockConfiger) error {
+func updateConfigCache(cc *configCache, logger zerolog.Logger, flConfiger fleetlock.FleetLockConfiger, loginCache *lru.Cache) error {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
 	defer cancel()
 	flc, err := flConfiger.GetLockers(ctx)
@@ -142,6 +144,15 @@ func updateConfigCache(cc *configCache, flConfiger fleetlock.FleetLockConfiger) 
 
 	cc.setLockerMap(flc)
 	cc.setPerms(flp)
+
+	// Purge login cache in case password hashes has been updated in
+	// the config (should not collide since hashes will have
+	// changed due to a new randomized salt even if setting the same
+	// password for a key), but makes sense to be careful
+	lenBefore := loginCache.Len()
+	loginCache.Purge()
+	lenAfter := loginCache.Len()
+	logger.Info().Msgf("purged login cache due to config reload, keys before: %d, keys after: %d", lenBefore, lenAfter)
 
 	return nil
 }
@@ -729,7 +740,19 @@ func ratelimitCleaner(logger zerolog.Logger, rl *rateLimiter) {
 	}
 }
 
-func flBasicAuthMiddleware(cc *configCache) alice.Constructor {
+func createLoginCacheKey(key string, expectedPasswordHash hashing.HashedPassword, password string) string {
+	var loginCacheKey []byte
+	loginCacheKey = append(loginCacheKey, key...)
+	loginCacheKey = append(loginCacheKey, expectedPasswordHash.Hash...)
+	loginCacheKey = append(loginCacheKey, expectedPasswordHash.Salt...)
+	loginCacheKey = append(loginCacheKey, password...)
+	hashedCacheKeyBytes := sha256.Sum256(loginCacheKey)
+	hashedCacheKey := hex.EncodeToString(hashedCacheKeyBytes[:])
+
+	return hashedCacheKey
+}
+
+func flBasicAuthMiddleware(cc *configCache, loginCache *lru.Cache) alice.Constructor {
 	return func(h http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			logger := hlog.FromRequest(r)
@@ -762,6 +785,10 @@ func flBasicAuthMiddleware(cc *configCache) alice.Constructor {
 
 			flattenedPerms := cc.getPerms()
 
+			foundKeys := []string{}
+
+			// Check if we have a cache hit for any of the
+			// keys first
 			for _, key := range keys {
 				expectedPasswordHash, ok := flattenedPerms[key]
 
@@ -770,30 +797,59 @@ func flBasicAuthMiddleware(cc *configCache) alice.Constructor {
 					continue
 				}
 
-				// The API passwords in the config are
-				// stored argon2 hashed in the database.
-				// Now hash the client supplied password
-				// so we can compare strings of equal
-				// length with
-				// subtle.ConstantTimeCompare()
-				hashedPassword := hashing.GetHashedPassword(
-					password,
-					expectedPasswordHash.Salt,
-					expectedPasswordHash.ArgonTime,
-					expectedPasswordHash.ArgonMemory,
-					expectedPasswordHash.ArgonThreads,
-					expectedPasswordHash.ArgonHashSize,
-				)
+				foundKeys = append(foundKeys, key)
 
-				// Use subtle.ConstantTimeCompare() in an attempt to
-				// not leak password contents via timing attack
-				passwordMatch := (subtle.ConstantTimeCompare(hashedPassword.Hash, expectedPasswordHash.Hash) == 1)
+				hashedCacheKey := createLoginCacheKey(key, expectedPasswordHash, password)
 
-				if passwordMatch {
+				if _, ok = loginCache.Get(hashedCacheKey); ok {
+					logger.Info().Msgf("login cache hit for key '%s'", key)
 					validLogin = true
-					break
 				}
+			}
 
+			// If successful login was found in cache, but we did
+			// find a matching key, do hash comparision:
+			if !validLogin && len(foundKeys) > 0 {
+				for _, key := range foundKeys {
+					expectedPasswordHash, ok := flattenedPerms[key]
+
+					if !ok {
+						// The key does not exist, try with the next one
+						logger.Info().Msgf("should have found key '%s' since it was found previously, please investigate", key)
+						continue
+					}
+
+					logger.Info().Msgf("login cache miss for key '%s'", key)
+
+					// The API passwords in the config are
+					// stored argon2 hashed in the database.
+					// Now hash the client supplied password
+					// so we can compare strings of equal
+					// length with
+					// subtle.ConstantTimeCompare()
+					hashedPassword := hashing.GetHashedPassword(
+						password,
+						expectedPasswordHash.Salt,
+						expectedPasswordHash.ArgonTime,
+						expectedPasswordHash.ArgonMemory,
+						expectedPasswordHash.ArgonThreads,
+						expectedPasswordHash.ArgonHashSize,
+					)
+
+					// Use subtle.ConstantTimeCompare() in an attempt to
+					// not leak password contents via timing attack
+					passwordMatch := (subtle.ConstantTimeCompare(hashedPassword.Hash, expectedPasswordHash.Hash) == 1)
+					if passwordMatch {
+						validLogin = true
+						hashedCacheKey := createLoginCacheKey(key, expectedPasswordHash, password)
+						evicted := loginCache.Add(hashedCacheKey, true)
+						if evicted {
+							logger.Info().Msg("adding key to loginCache resulted in eviction")
+						}
+						break
+					}
+
+				}
 			}
 
 			if validLogin {
@@ -1179,8 +1235,17 @@ func Run(configPath string) {
 		logger.Fatal().Err(err).Msg("unable to initialize config cache")
 	}
 
+	// LRU cache used for storing successful authentications on the
+	// FleetLock endpoints. Without this we need to compute
+	// expensive argon2 hashes for each request taking or releasing
+	// a lock.
+	loginCache, err := lru.New(128)
+	if err != nil {
+		logger.Fatal().Err(err).Msg("unable to initialize password LRU cache")
+	}
+
 	// run background config cache updater
-	go configCacheUpdater(cc, flConfiger, logger)
+	go configCacheUpdater(cc, flConfiger, logger, loginCache)
 
 	limiter := newIPLimiter()
 
@@ -1198,7 +1263,7 @@ func Run(configPath string) {
 	ratelimitingMiddleware := ratelimitMiddleware(conf, limiter)
 
 	// Create middleware chain used for the FleetLock endpoints.
-	fleetLockMiddlewares := newFleetLockMiddlewareChain(hlogMiddlewares, ratelimitingMiddleware, cc)
+	fleetLockMiddlewares := newFleetLockMiddlewareChain(hlogMiddlewares, ratelimitingMiddleware, cc, loginCache)
 
 	// Create middleware chain used for monitoring endpoints
 	monitoringMiddlewares := newMonitoringMiddlewareChain(hlogMiddlewares, ratelimitingMiddleware, conf.Monitoring)
@@ -1393,13 +1458,13 @@ func newHlogMiddlewareChain(logger zerolog.Logger) []alice.Constructor {
 	return hlogMiddlewares
 }
 
-func newFleetLockMiddlewareChain(hlogMiddlewares []alice.Constructor, ratelimitingMiddleware alice.Constructor, cc *configCache) []alice.Constructor {
+func newFleetLockMiddlewareChain(hlogMiddlewares []alice.Constructor, ratelimitingMiddleware alice.Constructor, cc *configCache, loginCache *lru.Cache) []alice.Constructor {
 	// Create middleware chain used for the FleetLock endpoints.
 	fleetLockMiddlewares := []alice.Constructor{}
 	fleetLockMiddlewares = append(fleetLockMiddlewares, hlogMiddlewares...)
 	fleetLockMiddlewares = append(fleetLockMiddlewares, ratelimitingMiddleware)
 	fleetLockMiddlewares = append(fleetLockMiddlewares, fleetLockValidatorMiddleware())
-	fleetLockMiddlewares = append(fleetLockMiddlewares, flBasicAuthMiddleware(cc))
+	fleetLockMiddlewares = append(fleetLockMiddlewares, flBasicAuthMiddleware(cc, loginCache))
 
 	return fleetLockMiddlewares
 }
