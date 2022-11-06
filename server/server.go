@@ -107,19 +107,11 @@ func configCacheUpdater(cc *configCache, flConfiger fleetlock.FleetLockConfiger,
 		// what we are actually working with.
 		switch ch := chanInterface.(type) {
 		case clientv3.WatchChan:
-			select {
-			case res := <-ch:
-				logger.Info().Msgf("notified by '%s' event on etcd3 watcher, updating config cache", res.Events[0].Type)
-				err := updateConfigCache(cc, logger, flConfiger, loginCache)
-				if err != nil {
-					logger.Err(err).Msg("unable to update config cache")
-				}
-			case <-time.After(time.Second * 300):
-				logger.Info().Msgf("no events seen before timeout value, updating config cache just in case")
-				err := updateConfigCache(cc, logger, flConfiger, loginCache)
-				if err != nil {
-					logger.Err(err).Msg("unable to update config cache")
-				}
+			res := <-ch
+			logger.Info().Msgf("notified by '%s' event on etcd3 watcher, updating config cache", res.Events[0].Type)
+			err := updateConfigCache(cc, logger, flConfiger, loginCache)
+			if err != nil {
+				logger.Err(err).Msg("unable to update config cache")
 			}
 		default:
 			logger.Error().Msg("unsupported notifier type, not starting cache updated")
