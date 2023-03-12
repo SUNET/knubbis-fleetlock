@@ -1199,12 +1199,11 @@ func Run(configPath string) {
 
 	if conf.Etcd3.RootCAPath != "" {
 		logger.Info().Msgf("using etcd3 root ca file: %s", conf.Etcd3.RootCAPath)
-		etcd3TLSConfig.RootCAs = x509.NewCertPool()
-
 		caPEMBytes, err := os.ReadFile(conf.Etcd3.RootCAPath)
 		if err != nil {
 			logger.Fatal().Err(err).Msgf("unable to read etcd3 root ca: %s", conf.Etcd3.RootCAPath)
 		}
+		etcd3TLSConfig.RootCAs = x509.NewCertPool()
 		etcd3TLSConfig.RootCAs.AppendCertsFromPEM(caPEMBytes)
 	}
 
