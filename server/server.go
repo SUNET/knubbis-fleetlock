@@ -1205,7 +1205,7 @@ func Run(configPath string) {
 		if err != nil {
 			logger.Fatal().Err(err).Msgf("unable to read etcd3 root ca: %s", conf.Etcd3.RootCAPath)
 		}
-		etcd3TLSConfig.ClientCAs.AppendCertsFromPEM(caPEMBytes)
+		etcd3TLSConfig.RootCAs.AppendCertsFromPEM(caPEMBytes)
 	}
 
 	etcd3Client, err := newEtcd3Client(conf.Etcd3, etcd3TLSConfig)
