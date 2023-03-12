@@ -14,6 +14,7 @@ endpoints = ["https://localhost:2379"]
 username = "knubbis-fleetlock"
 password = "changeme"
 insecure_skip_verify = false
+root_ca_path = "/path/to/ca.pem"
 
 [certmagic]
 salt = "36023a78c7d2000ac58604da1b630a9e"

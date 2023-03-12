@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -260,7 +261,8 @@ type etcd3config struct {
 	Endpoints          []string
 	Username           string
 	Password           string
-	InsecureSkipVerify bool `toml:"insecure_skip_verify"`
+	InsecureSkipVerify bool   `toml:"insecure_skip_verify"`
+	RootCAPath         string `toml:"root_ca_path"`
 }
 
 type certMagicConfig struct {
@@ -1106,6 +1108,7 @@ func defaultServerConfig() serverConfig {
 			Username:           "knubbis-fleetlock",
 			Password:           "changeme",
 			InsecureSkipVerify: false,
+			RootCAPath:         "",
 		},
 		CertMagic: certMagicConfig{
 			Salt:            "changeme",
@@ -1193,6 +1196,17 @@ func Run(configPath string) {
 	}
 
 	etcd3TLSConfig := &tls.Config{InsecureSkipVerify: conf.Etcd3.InsecureSkipVerify} // #nosec this is configurable for testing
+
+	if conf.Etcd3.RootCAPath != "" {
+		logger.Info().Msgf("using etcd3 root ca file: %s", conf.Etcd3.RootCAPath)
+		etcd3TLSConfig.RootCAs = x509.NewCertPool()
+
+		caPEMBytes, err := os.ReadFile(conf.Etcd3.RootCAPath)
+		if err != nil {
+			logger.Fatal().Err(err).Msgf("unable to read etcd3 root ca: %s", conf.Etcd3.RootCAPath)
+		}
+		etcd3TLSConfig.ClientCAs.AppendCertsFromPEM(caPEMBytes)
+	}
 
 	etcd3Client, err := newEtcd3Client(conf.Etcd3, etcd3TLSConfig)
 	if err != nil {
