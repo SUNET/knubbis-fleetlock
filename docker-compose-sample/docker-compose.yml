@@ -38,6 +38,7 @@ services:
     user: 1000000000:1000000000
     volumes:
       - /opt/knubbis-fleetlock/etcd-bootstrap:/etcd-bootstrap
+      - /opt/knubbis-fleetlock/cert-bootstrap-ca:/cert-bootstrap-ca
     command:
       - "/etcd-bootstrap/bootstrap.sh"
     depends_on:

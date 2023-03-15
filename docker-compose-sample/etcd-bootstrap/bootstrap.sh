@@ -13,7 +13,7 @@
 # would make it visible in the process list).
 password=$(cat /etcd-bootstrap/password-root)
 export ETCDCTL_PASSWORD=$password
-base_cmd="etcdctl --insecure-skip-tls-verify=true --insecure-transport=false --endpoints=https://etcd:2379 --user root"
+base_cmd="etcdctl --cacert=/cert-bootstrap-ca/ca.pem --endpoints=https://etcd:2379 --user root"
 
 # wait for etcd container to be alive
 while true; do
