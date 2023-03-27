@@ -66,6 +66,7 @@ var version = "unspecified"
 
 // Some constant values
 const groupDoesNotExistMsg string = "group does not exist in config"
+const failedGettingLockMsg string = "failed getting lock"
 
 // configCache struct is used for storing config settings stored in a
 // backend and can be dynamically updated at runtime. The mutex is used
@@ -357,10 +358,10 @@ func preRebootFunc(cc *configCache, timeout time.Duration) http.HandlerFunc {
 
 		err := groupLocker.RecursiveLock(lockerCtx, fld.ClientParams.ID)
 		if err != nil {
-			logger.Err(err).Msg("failed getting lock")
+			logger.Err(err).Msg(failedGettingLockMsg)
 
 			// Set default error content and status
-			msg := "failed getting lock"
+			msg := failedGettingLockMsg
 			errStatus := http.StatusInternalServerError
 
 			// If specific type of error we trust that the
@@ -417,7 +418,7 @@ func steadyStateFunc(cc *configCache, timeout time.Duration) http.HandlerFunc {
 		err := groupLocker.UnlockIfHeld(lockerCtx, fld.ClientParams.ID)
 		if err != nil {
 			logger.Err(err).
-				Msg("failed getting lock")
+				Msg(failedGettingLockMsg)
 
 			err = fleetLockSendError("failed_unlock", http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError, w)
 			if err != nil {
