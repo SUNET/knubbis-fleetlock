@@ -1,7 +1,7 @@
 version: "3.9"
 services:
   cert-bootstrap:
-    image: "docker.sunet.se/knubbis/knubbis-cfssl-helper:2c862a34f0017e4e5c7b87847e666260ffd9383c"
+    image: "docker.sunet.se/knubbis/knubbis-cfssl-helper:v0.0.1"
     user: 1000000000:1000000000
     volumes:
       - /opt/knubbis-fleetlock/cert-bootstrap:/cert-bootstrap
@@ -34,7 +34,7 @@ services:
         condition: service_completed_successfully
 
   etcd-bootstrap:
-    image: "docker.sunet.se/knubbis/knubbis-etcdctl-helper:ac104668b10034e9ec47680633e565c264628e8b"
+    image: "docker.sunet.se/knubbis/knubbis-etcdctl-helper:v0.0.1"
     user: 1000000000:1000000000
     volumes:
       - /opt/knubbis-fleetlock/etcd-bootstrap:/etcd-bootstrap
