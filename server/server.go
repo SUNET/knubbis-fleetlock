@@ -65,9 +65,11 @@ import (
 var version = "unspecified"
 
 // Some constant values
-const groupDoesNotExistMsg string = "group does not exist in config"
-const failedGettingLockMsg string = "failed getting lock"
-const fleetLockProtocolName string = "fleet-lock-protocol"
+const (
+	groupDoesNotExistMsg  string = "group does not exist in config"
+	failedGettingLockMsg  string = "failed getting lock"
+	fleetLockProtocolName string = "fleet-lock-protocol"
+)
 
 // configCache struct is used for storing config settings stored in a
 // backend and can be dynamically updated at runtime. The mutex is used
