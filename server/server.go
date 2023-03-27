@@ -67,6 +67,7 @@ var version = "unspecified"
 // Some constant values
 const groupDoesNotExistMsg string = "group does not exist in config"
 const failedGettingLockMsg string = "failed getting lock"
+const fleetLockProtocolName string = "fleet-lock-protocol"
 
 // configCache struct is used for storing config settings stored in a
 // backend and can be dynamically updated at runtime. The mutex is used
@@ -937,11 +938,11 @@ func fleetLockValidatorMiddleware() alice.Constructor {
 			logger := hlog.FromRequest(r)
 			// Verify that a valid FleetLock header is present
 			// https://coreos.github.io/zincati/development/fleetlock/protocol/#headers
-			if r.Header.Get("fleet-lock-protocol") != "true" {
+			if r.Header.Get(fleetLockProtocolName) != "true" {
 				logger.Warn().
-					Msg("missing 'fleet-lock-protocol' header")
+					Msgf("missing '%s' header", fleetLockProtocolName)
 
-				err := fleetLockSendError("invalid_fleetlock_header", "'fleet-lock-protocol' header must be set to 'true'", http.StatusBadRequest, w)
+				err := fleetLockSendError("invalid_fleetlock_header", fmt.Sprintf("'%s' header must be set to 'true'", fleetLockProtocolName), http.StatusBadRequest, w)
 				if err != nil {
 					logger.Err(err).Msg("failed sending FleetLock error to client")
 					w.WriteHeader(http.StatusInternalServerError)
