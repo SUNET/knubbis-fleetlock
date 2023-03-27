@@ -69,6 +69,7 @@ const (
 	groupDoesNotExistMsg  string = "group does not exist in config"
 	failedGettingLockMsg  string = "failed getting lock"
 	fleetLockProtocolName string = "fleet-lock-protocol"
+	contentTypeString     string = "application/json; charset=utf-8"
 )
 
 // configCache struct is used for storing config settings stored in a
@@ -658,7 +659,7 @@ func staleLocksFunc(cc *configCache, timeout time.Duration) http.HandlerFunc {
 }
 
 func writeNewlineJSON(w http.ResponseWriter, b []byte, statusCode int) error {
-	w.Header().Set("content-type", "application/json; charset=utf-8")
+	w.Header().Set("content-type", contentTypeString)
 	w.WriteHeader(statusCode)
 	// Include newline since this JSON can be returned to curl
 	// requests and similar where the prompt gets messed up without
