@@ -45,7 +45,7 @@ services:
       - etcd
 
   knubbis-fleetlock:
-    image: "docker.sunet.se/knubbis/knubbis-fleetlock:f865257d08de94e00009908ce56a5e26cb96789b"
+    image: "docker.sunet.se/knubbis/knubbis-fleetlock:v0.0.2"
     user: 1000000001:1000000001
     ports:
       - "443:8443"
