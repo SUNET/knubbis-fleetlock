@@ -64,6 +64,9 @@ import (
 // version set at build time with -ldflags="-X github.com/SUNET/knubbis-fleetlock/server.version=v0.0.1"
 var version = "unspecified"
 
+// Some constant values
+const groupDoesNotExistMsg string = "group does not exist in config"
+
 // configCache struct is used for storing config settings stored in a
 // backend and can be dynamically updated at runtime. The mutex is used
 // to protect writes and reads to the different maps. The expectation is
@@ -338,9 +341,9 @@ func preRebootFunc(cc *configCache, timeout time.Duration) http.HandlerFunc {
 
 		groupLocker, groupExists := cc.getGroupLocker(fld.ClientParams.Group)
 		if !groupExists {
-			logger.Error().Msg("group does not exist in config")
+			logger.Error().Msg(groupDoesNotExistMsg)
 
-			err := fleetLockSendError("failed_lock", "group does not exist in config", http.StatusInternalServerError, w)
+			err := fleetLockSendError("failed_lock", groupDoesNotExistMsg, http.StatusInternalServerError, w)
 			if err != nil {
 				logger.Err(err).Msgf("failed sending RecursiveLock error: %s", err)
 			}
@@ -397,9 +400,9 @@ func steadyStateFunc(cc *configCache, timeout time.Duration) http.HandlerFunc {
 
 		groupLocker, groupExists := cc.getGroupLocker(fld.ClientParams.Group)
 		if !groupExists {
-			logger.Error().Msg("group does not exist in config")
+			logger.Error().Msg(groupDoesNotExistMsg)
 
-			err := fleetLockSendError("failed_lock", "group does not exist in config", http.StatusInternalServerError, w)
+			err := fleetLockSendError("failed_lock", groupDoesNotExistMsg, http.StatusInternalServerError, w)
 			if err != nil {
 				logger.Err(err).Msg("failed sending nonexistant group error")
 			}
