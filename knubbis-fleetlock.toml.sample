@@ -1,5 +1,6 @@
 [server]
 listen = ":8443"
+exposed_port = 8443
 read_timeout = "10s"
 write_timeout = "10s"
 backend = "etcd3"

@@ -19,6 +19,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -238,6 +239,7 @@ type serverConfig struct {
 
 type serverSettings struct {
 	Listen        string
+	ExposedPort   int `toml:"exposed_port"`
 	Backend       string
 	ReadTimeout   duration `toml:"read_timeout"`
 	WriteTimeout  duration `toml:"write_timeout"`
@@ -1367,11 +1369,27 @@ func Run(configPath string) {
 		logger.Fatal().Err(err).Msgf("unable to split out port from listen address '%s'", conf.Server.Listen)
 	}
 
+	listenPortInt, err := strconv.Atoi(listenPort)
+	if err != nil {
+		logger.Fatal().Err(err).Msgf("unable to convert listening port to int: '%s'", listenPort)
+	}
+
+	// Default to using the same port as the process is listening on
+	servicePort := listenPort
+
+	// If the service is running in a container and clients reach the
+	// service on another port than the process is listening on we need
+	// to advertise the port exposed to clients, not the port the process
+	// is listening on.
+	if conf.Server.ExposedPort != 0 && conf.Server.ExposedPort != listenPortInt {
+		servicePort = strconv.Itoa(conf.Server.ExposedPort)
+	}
+
 	serviceURLString := conf.CertMagic.Domains[0]
 
 	// Only include the :port if non-default for HTTPS
-	if listenPort != "443" {
-		serviceURLString = serviceURLString + ":" + listenPort
+	if servicePort != "443" {
+		serviceURLString = serviceURLString + ":" + servicePort
 	}
 	// This path is expected by the http-swagger module
 	swaggerURLString := serviceURLString + "/swagger/doc.json"
