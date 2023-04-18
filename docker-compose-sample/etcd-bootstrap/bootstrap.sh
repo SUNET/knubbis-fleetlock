@@ -12,7 +12,7 @@
 # Prefer env variable over passing the password on the command line (since that
 # would make it visible in the process list).
 password=$(cat /etcd-bootstrap/password-root)
-export ETCDCTL_PASSWORD=$password
+export ETCDCTL_PASSWORD="$password"
 base_cmd="etcdctl --cacert=/cert-bootstrap-ca/ca.pem --endpoints=https://etcd:2379 --user root"
 
 # wait for etcd container to be alive
@@ -28,12 +28,12 @@ if $base_cmd auth status | grep -q '^Authentication Status: false$'; then
 
     # Add 'root' user, required for enabling auth
     if ! $base_cmd user list | grep -q '^root$'; then
-        cat /etcd-bootstrap/password-root | $base_cmd user add root --interactive=false
+        $base_cmd user add root --interactive=false < /etcd-bootstrap/password-root
     fi
 
     # Add 'knubbis-fleetlock' user, used by the service when talking to the backend
     if ! $base_cmd user list | grep -q '^knubbis-fleetlock$'; then
-        cat /etcd-bootstrap/password-knubbis-fleetlock | $base_cmd user add knubbis-fleetlock --interactive=false
+        $base_cmd user add knubbis-fleetlock --interactive=false < /etcd-bootstrap/password-knubbis-fleetlock
     fi
 
     # Add role with permissions and assign it to knubbis-fleetlock user
