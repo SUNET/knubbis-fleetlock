@@ -48,15 +48,15 @@ Also, since we want to populate the `etcd` database on first use there is also a
 bootstrap container that will run after starting `etcd` but before starting
 `knubbis-fleetlock`, and it needs an input bootstrap script e.g.:
 ```
-mkdir -p /opt/knubbis-fleetlock/bootstrap-etcd
-cp bootstrap-etcd/bootstrap.sh /opt/knubbis-fleetlock/bootstrap-etcd
+mkdir -p /opt/knubbis-fleetlock/etcd-bootstrap
+cp etcd-bootstrap/bootstrap.sh /opt/knubbis-fleetlock/etcd-bootstrap
 ```
 
 The bootstrap script also expects a password for the `root` and
 `knubbis-fleetlock` user, e.g.:
 ```
-echo "somethingsecret" > /opt/knubbis-fleetlock/bootstrap-etcd/password-root
-echo "somethingelsesecret" > /opt/knubbis-fleetlock/bootstrap-etcd/password-knubbis-fleetlock
+echo "somethingsecret" > /opt/knubbis-fleetlock/etcd-bootstrap/password-root
+echo "somethingelsesecret" > /opt/knubbis-fleetlock/etcd-bootstrap/password-knubbis-fleetlock
 ```
 
 ## knubbis-fleetlock
