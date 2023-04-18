@@ -3,14 +3,14 @@ This repo contains sample files for setting up a single node `knubbis-fleetlock`
 service where the backend `etcd` server runs on the same node.
 
 Keep in mind that this expects that you have prepopulated the
-/opt/knubbis-fleetlock directory with the respective contents as mounted by the
+`/opt/knubbis-fleetlock` directory with the respective contents as mounted by the
 docker compose file beforehand, see below.
 
 ## Certificates
 The sample compose file uses cfssl tools to create a CA cert and `etcd` server
 cert signed by that CA everytime the compose file is started. It will make the
 generated `ca.pem` file available in `/opt/knubbis-fleetlock/cert-bootstrap-ca` for
-consumption by the `knubis-fleetlock-server` server. It will make the `etcd` server cert
+consumption by the `knubbis-fleetlock-server` server. It will make the `etcd` server cert
 and private key available in `/opt/knubbis-fleetlock/cert-bootstrap-etcd` for use
 by the `etcd` process. The CA private key is not saved because it will be
 regenerated at next startup anyway.
