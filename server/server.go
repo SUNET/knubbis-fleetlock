@@ -825,6 +825,13 @@ func flBasicAuthMiddleware(cc *configCache, loginCache *lru.Cache) alice.Constru
 
 					logger.Info().Msgf("login cache miss for key '%s'", key)
 
+					argonSettings := hashing.NewArgonSettings(
+						expectedPasswordHash.ArgonTime,
+						expectedPasswordHash.ArgonMemory,
+						expectedPasswordHash.ArgonThreads,
+						expectedPasswordHash.ArgonHashSize,
+					)
+
 					// The API passwords in the config are
 					// stored argon2 hashed in the database.
 					// Now hash the client supplied password
@@ -834,10 +841,7 @@ func flBasicAuthMiddleware(cc *configCache, loginCache *lru.Cache) alice.Constru
 					hashedPassword := hashing.GetHashedPassword(
 						password,
 						expectedPasswordHash.Salt,
-						expectedPasswordHash.ArgonTime,
-						expectedPasswordHash.ArgonMemory,
-						expectedPasswordHash.ArgonThreads,
-						expectedPasswordHash.ArgonHashSize,
+						argonSettings,
 					)
 
 					// Use subtle.ConstantTimeCompare() in an attempt to
@@ -1235,7 +1239,9 @@ func Run(configPath string) {
 
 	flConfigName := "default"
 
-	flConfiger, err := etcd3.NewConfiger(etcd3Client, flConfigName)
+	configArgonSettings := hashing.NewArgonDefaultSettings()
+
+	flConfiger, err := etcd3.NewConfiger(etcd3Client, flConfigName, configArgonSettings)
 	if err != nil {
 		logger.Fatal().Err(err).Msgf("cannot create FleetLockConfig for '%s'", flConfigName)
 	}
@@ -1309,13 +1315,12 @@ func Run(configPath string) {
 
 	// AES-256 needs a 32 byte-key
 	AESKeyLen := uint32(32)
+	aes256ArgonSettings := hashing.NewArgonSettings(conf.CertMagic.ArgonTime, conf.CertMagic.ArgonMemory, conf.CertMagic.ArgonThreads, AESKeyLen)
+
 	hashedPassword := hashing.GetHashedPassword(
 		conf.CertMagic.Password,
 		salt,
-		conf.CertMagic.ArgonTime,
-		conf.CertMagic.ArgonMemory,
-		conf.CertMagic.ArgonThreads,
-		AESKeyLen,
+		aes256ArgonSettings,
 	)
 
 	key := hashedPassword.Hash

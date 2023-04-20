@@ -131,12 +131,12 @@ type FleetLockConfiger interface {
 	DelGroup(ctx context.Context, group string) error
 }
 
-func NewHashedConfig(flc FleetLockConfig) (FleetLockHashedConfig, error) {
+func NewHashedConfig(flc FleetLockConfig, argonSettings hashing.ArgonSettings) (FleetLockHashedConfig, error) {
 
 	flhc := map[string]HashedGroupSettings{}
 
 	for group, settings := range flc {
-		hashedPerms, err := hashing.HashPermissionPasswords(settings.Permissions)
+		hashedPerms, err := hashing.HashPermissionPasswords(settings.Permissions, argonSettings)
 		if err != nil {
 			return FleetLockHashedConfig{}, fmt.Errorf("newFlcStorage: %w", err)
 		}

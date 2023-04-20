@@ -38,8 +38,9 @@ type Etcd3Backend struct {
 
 // Type implementing the FleetLockConfiger interface using etcd3 as a backend
 type Etcd3Config struct {
-	client *clientv3.Client
-	key    string
+	client        *clientv3.Client
+	key           string
+	argonSettings hashing.ArgonSettings
 }
 
 func newLocker(client *clientv3.Client, group string, totalSlots int, staleAge fleetlock.Duration) (*Etcd3Backend, error) {
@@ -260,10 +261,11 @@ func (eb *Etcd3Backend) atomicWrite(sData semaphore, version int64) error {
 	return nil
 }
 
-func NewConfiger(client *clientv3.Client, configName string) (*Etcd3Config, error) {
+func NewConfiger(client *clientv3.Client, configName string, argonSettings hashing.ArgonSettings) (*Etcd3Config, error) {
 	return &Etcd3Config{
-		client: client,
-		key:    fmt.Sprintf("se.sunet.knubbis/fleetlock/config/%s/v1/data", configName),
+		client:        client,
+		key:           fmt.Sprintf("se.sunet.knubbis/fleetlock/config/%s/v1/data", configName),
+		argonSettings: argonSettings,
 	}, nil
 }
 
@@ -400,7 +402,7 @@ func (ec *Etcd3Config) AddGroup(ctx context.Context, group string, totalSlots in
 			},
 		}
 
-		flhc, err := fleetlock.NewHashedConfig(flc)
+		flhc, err := fleetlock.NewHashedConfig(flc, ec.argonSettings)
 		if err != nil {
 			return fmt.Errorf("AddGroup: %w", err)
 		}
@@ -427,7 +429,7 @@ func (ec *Etcd3Config) AddGroup(ctx context.Context, group string, totalSlots in
 			return fmt.Errorf("AddGroup: group '%s' already exists", group)
 		}
 
-		hashedPerms, err := hashing.HashPermissionPasswords(permissions)
+		hashedPerms, err := hashing.HashPermissionPasswords(permissions, ec.argonSettings)
 		if err != nil {
 			return fmt.Errorf("AddGroup: unable to hash perms: %w", err)
 		}

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/SUNET/knubbis-fleetlock/fleetlock"
+	"github.com/SUNET/knubbis-fleetlock/hashing"
 	lru "github.com/hashicorp/golang-lru"
 	"github.com/justinas/alice"
 	"golang.org/x/time/rate"
@@ -104,7 +105,8 @@ func TestFleetLockHandlers(t *testing.T) {
 		},
 	}
 
-	flHashedConfig, err := fleetlock.NewHashedConfig(flConfig)
+	argonSettings := hashing.NewArgonDefaultSettings()
+	flHashedConfig, err := fleetlock.NewHashedConfig(flConfig, argonSettings)
 	if err != nil {
 		t.Fatalf("unable to created hashed config: %s", err)
 	}
