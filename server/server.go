@@ -811,8 +811,8 @@ func flBasicAuthMiddleware(cc *configCache, loginCache *lru.Cache) alice.Constru
 				}
 			}
 
-			// If successful login was found in cache, but we did
-			// find a matching key, do hash comparision:
+			// If successful login was not found in cache, but we
+			// did find a matching key, do hash comparision:
 			if !validLogin && len(foundKeys) > 0 {
 				for _, key := range foundKeys {
 					expectedPasswordHash, ok := flattenedPerms[key]
