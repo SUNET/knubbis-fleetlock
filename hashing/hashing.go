@@ -62,9 +62,9 @@ func GetHashedPassword(password string, salt []byte, argonTime uint32, argonMemo
 	return HashedPassword{
 		Hash:          key,
 		Salt:          salt,
-		ArgonTime:     ArgonTime,
-		ArgonMemory:   ArgonMemory,
-		ArgonThreads:  ArgonThreads,
+		ArgonTime:     argonTime,
+		ArgonMemory:   argonMemory,
+		ArgonThreads:  argonThreads,
 		ArgonHashSize: argonHashSize,
 	}
 }
