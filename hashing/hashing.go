@@ -78,8 +78,6 @@ func SaltFromHex(hexString string) ([]byte, error) {
 	return salt, nil
 }
 
-//const ArgonHashSize = uint32(32)
-
 func GetHashedPassword(password string, salt []byte, argonSettings ArgonSettings) HashedPassword {
 	key := argon2.IDKey([]byte(password), salt, argonSettings.ArgonTime, argonSettings.ArgonMemory, argonSettings.ArgonThreads, argonSettings.ArgonHashSize)
 
