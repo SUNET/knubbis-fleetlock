@@ -14,10 +14,10 @@ import (
 )
 
 type ArgonSettings struct {
-	ArgonTime     uint32
-	ArgonMemory   uint32
-	ArgonThreads  uint8
-	ArgonHashSize uint32
+	ArgonTime     uint32 `json:"argon_time"`
+	ArgonMemory   uint32 `json:"argon_memory"`
+	ArgonThreads  uint8  `json:"argon_threads"`
+	ArgonHashSize uint32 `json:"argon_hash_size"`
 }
 
 func NewArgonSettings(argonTime uint32, argonMemory uint32, argonThreads uint8, argonHashSize uint32) ArgonSettings {
@@ -84,12 +84,14 @@ func GetHashedPassword(password string, salt []byte, argonSettings ArgonSettings
 	key := argon2.IDKey([]byte(password), salt, argonSettings.ArgonTime, argonSettings.ArgonMemory, argonSettings.ArgonThreads, argonSettings.ArgonHashSize)
 
 	return HashedPassword{
-		Hash:          key,
-		Salt:          salt,
-		ArgonTime:     argonSettings.ArgonTime,
-		ArgonMemory:   argonSettings.ArgonMemory,
-		ArgonThreads:  argonSettings.ArgonThreads,
-		ArgonHashSize: argonSettings.ArgonHashSize,
+		Hash: key,
+		Salt: salt,
+		ArgonSettings: ArgonSettings{
+			ArgonTime:     argonSettings.ArgonTime,
+			ArgonMemory:   argonSettings.ArgonMemory,
+			ArgonThreads:  argonSettings.ArgonThreads,
+			ArgonHashSize: argonSettings.ArgonHashSize,
+		},
 	}
 }
 
@@ -119,10 +121,7 @@ func HashPermissionPasswords(perms map[string]string, argonSettings ArgonSetting
 }
 
 type HashedPassword struct {
-	Hash          []byte `json:"hash"`
-	Salt          []byte `json:"salt"`
-	ArgonTime     uint32 `json:"argon_time"`
-	ArgonMemory   uint32 `json:"argon_memory"`
-	ArgonThreads  uint8  `json:"argon_threads"`
-	ArgonHashSize uint32 `json:"argon_hash_size"`
+	Hash []byte `json:"hash"`
+	Salt []byte `json:"salt"`
+	ArgonSettings
 }
