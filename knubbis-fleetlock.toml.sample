@@ -12,6 +12,8 @@ burst = 3
 
 [etcd3]
 endpoints = ["https://localhost:2379"]
+cert_file = ""
+key_file = ""
 username = "knubbis-fleetlock"
 password = "changeme"
 insecure_skip_verify = false

@@ -269,6 +269,8 @@ type apiConfig struct {
 
 type etcd3config struct {
 	Endpoints          []string
+	CertFile           string `toml:"cert_file"`
+	KeyFile            string `toml:"key_file"`
 	Username           string
 	Password           string
 	InsecureSkipVerify bool   `toml:"insecure_skip_verify"`
@@ -1221,6 +1223,17 @@ func Run(configPath string) {
 		etcd3TLSConfig.RootCAs.AppendCertsFromPEM(caPEMBytes)
 	}
 
+	// Use TLS client authentication if a cert and key is configured
+	if conf.Etcd3.CertFile != "" && conf.Etcd3.KeyFile != "" {
+		logger.Info().Msgf("using etcd3 client cert authentication via cert: %s, key: %s", conf.Etcd3.CertFile, conf.Etcd3.KeyFile)
+		etcd3ClientCert, err := tls.LoadX509KeyPair(conf.Etcd3.CertFile, conf.Etcd3.KeyFile)
+		if err != nil {
+			logger.Fatal().Err(err).Msgf("unable to setup etcd3 client certificates")
+		}
+
+		etcd3TLSConfig.Certificates = []tls.Certificate{etcd3ClientCert}
+	}
+
 	etcd3Client, err := newEtcd3Client(conf.Etcd3, etcd3TLSConfig)
 	if err != nil {
 		logger.Fatal().
@@ -1534,8 +1547,20 @@ func newEtcd3Client(conf etcd3config, tlsConfig *tls.Config) (*clientv3.Client, 
 	etcd3Config := clientv3.Config{
 		Endpoints:   conf.Endpoints,
 		DialTimeout: 5 * time.Second,
-		Username:    conf.Username,
-		Password:    conf.Password,
+	}
+
+	// It is possible we are using client cert auth, then a username and
+	// password is not needed.
+	// From https://etcd.io/docs/v3.5/op-guide/authentication/rbac/:
+	// ===
+	// Note that if both of 1. --client-cert-auth=true is passed and CN is
+	// provided by the client, and 2. username and password are provided by
+	// the client, the username and password based authentication is
+	// prioritized.
+	// ===
+	if conf.Username != "" && conf.Password != "" {
+		etcd3Config.Username = conf.Username
+		etcd3Config.Password = conf.Password
 	}
 
 	etcd3Config.TLS = tlsConfig
