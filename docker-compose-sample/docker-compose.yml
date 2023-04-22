@@ -15,7 +15,7 @@ services:
       - "/cert-bootstrap/bootstrap.sh"
 
   etcd:
-    image: "gcr.io/etcd-development/etcd:v3.5.7"
+    image: "gcr.io/etcd-development/etcd:v3.5.8"
     user: 1000000000:1000000000
     volumes:
       - /opt/knubbis-fleetlock/etcd-data:/etcd-data
