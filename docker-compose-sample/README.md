@@ -15,20 +15,38 @@ and private key available in `/opt/knubbis-fleetlock/cert-bootstrap-etcd` for us
 by the `etcd` process. The CA private key is not saved because it will be
 regenerated at next startup anyway.
 
+We also generate client certificates for a "root" and "knubbis-fleetlock" user.
+The "root" user can be used for management like taking snapshots, while the
+"knubbis-fleetlock" user is used for authenticating to etcd from the
+knubbis-fleetlock server.
+
 The input `bootstrap.sh`, `ca.json` and `csr.json` files need to be added to
 `/opt/knubbis-fleetlock/cert-bootstrap`, but the directory can be read-only
 from the container perspective, e.g.:
 ```
 mkdir -p /opt/knubbis-fleetlock/cert-bootstrap
-cp cert-bootstrap/bootstrap.sh cert-bootstrap/ca.json cert-bootstrap/csr.json /opt/knubbis-fleetlock/cert-bootstrap
+cp \
+    cert-bootstrap/bootstrap.sh \
+    cert-bootstrap/ca.json \
+    cert-bootstrap/etcd.json \
+    cert-bootstrap/root.json \
+    cert-bootstrap/knubbis-fleetlock.json \
+    /opt/knubbis-fleetlock/cert-bootstrap
 ```
 
 The following cert directories need to exist but can be empty initially, e.g:
 ```
-mkdir -p /opt/knubbis-fleetlock/cert-bootstrap-ca
-chown 1000000000:1000000000 /opt/knubbis-fleetlock/cert-bootstrap-ca
-mkdir -p /opt/knubbis-fleetlock/cert-bootstrap-etcd
-chown 1000000000:1000000000 /opt/knubbis-fleetlock/cert-bootstrap-etcd
+mkdir -p \
+    /opt/knubbis-fleetlock/cert-bootstrap-ca \
+    /opt/knubbis-fleetlock/cert-bootstrap-etcd \
+    /opt/knubbis-fleetlock/cert-bootstrap-client-root \
+    /opt/knubbis-fleetlock/cert-bootstrap-client-knubbis-fleetlock
+
+chown 1000000000:1000000000 \
+    /opt/knubbis-fleetlock/cert-bootstrap-ca \
+    /opt/knubbis-fleetlock/cert-bootstrap-etcd \
+    /opt/knubbis-fleetlock/cert-bootstrap-client-root \
+    /opt/knubbis-fleetlock/cert-bootstrap-client-knubbis-fleetlock
 ```
 
 ## etcd
@@ -50,13 +68,6 @@ bootstrap container that will run after starting `etcd` but before starting
 ```
 mkdir -p /opt/knubbis-fleetlock/etcd-bootstrap
 cp etcd-bootstrap/bootstrap.sh /opt/knubbis-fleetlock/etcd-bootstrap
-```
-
-The bootstrap script also expects a password for the `root` and
-`knubbis-fleetlock` user, e.g.:
-```
-echo "somethingsecret" > /opt/knubbis-fleetlock/etcd-bootstrap/password-root
-echo "somethingelsesecret" > /opt/knubbis-fleetlock/etcd-bootstrap/password-knubbis-fleetlock
 ```
 
 ## knubbis-fleetlock
