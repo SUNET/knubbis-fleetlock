@@ -25,6 +25,24 @@ const docTemplate = `{
     "basePath": "{{.BasePath}}",
     "paths": {
         "/groups": {
+            "get": {
+                "description": "Get the current available groups",
+                "tags": [
+                    "groups"
+                ],
+                "summary": "Get groups",
+                "responses": {
+                    "200": {
+                        "description": "OK"
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/server.apiError"
+                        }
+                    }
+                }
+            },
             "post": {
                 "description": "Add a new FleetLock group",
                 "consumes": [

@@ -41,6 +41,18 @@ info:
   version: 0.0.1
 paths:
   /groups:
+    get:
+      description: Get the current available groups
+      responses:
+        "200":
+          description: OK
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/server.apiError'
+      summary: Get groups
+      tags:
+      - groups
     post:
       consumes:
       - application/json

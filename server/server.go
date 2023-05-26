@@ -446,26 +446,36 @@ type lockStatusData struct {
 	Groups map[string]fleetlock.LockStatus `json:"groups"`
 }
 
+func getLockStatus(ctx context.Context, timeout time.Duration, cc *configCache, logger *zerolog.Logger) (lockStatusData, error) {
+	lsd := lockStatusData{
+		Groups: map[string]fleetlock.LockStatus{},
+	}
+
+	lockerCtx, lockerCancel := context.WithTimeout(ctx, timeout)
+	defer lockerCancel()
+
+	for group, locker := range cc.getMap() {
+		ls, err := locker.LockStatus(lockerCtx)
+		if err != nil {
+			logger.Err(err).Msgf("unable to get LockStatus for group '%s'", group)
+			return lockStatusData{}, err
+		}
+		lsd.Groups[group] = ls
+	}
+
+	return lsd, nil
+}
+
 // handler called when clients request lock status
 func lockStatusFunc(cc *configCache, timeout time.Duration) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		logger := hlog.FromRequest(r)
 
-		lsd := lockStatusData{
-			Groups: map[string]fleetlock.LockStatus{},
-		}
+		lsd, err := getLockStatus(r.Context(), timeout, cc, logger)
 
-		lockerCtx, lockerCancel := context.WithTimeout(r.Context(), timeout)
-		defer lockerCancel()
-
-		for group, locker := range cc.getMap() {
-			ls, err := locker.LockStatus(lockerCtx)
-			if err != nil {
-				logger.Err(err).Msgf("unable to get LockStatus for group '%s'", group)
-				http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-				return
-			}
-			lsd.Groups[group] = ls
+		if err != nil {
+			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+			return
 		}
 
 		b, err := json.Marshal(lsd)
@@ -498,6 +508,23 @@ type apiError struct {
 type addGroupModel struct {
 	fleetlock.GroupSettings
 	Name string `json:"name" example:"workers"`
+}
+
+// Annotations for generating swagger docs:
+//
+// @Summary     Get groups
+// @Description Get the current available groups
+// @Tags        groups
+// @Success     200
+// @Failure     400 {object} apiError
+// @Router      /groups [get]
+func getGroups(ctx context.Context, timeout time.Duration, cc *configCache, logger *zerolog.Logger) (lockStatusData, error) {
+
+	lsd, err := getLockStatus(ctx, timeout, cc, logger)
+	if err != nil {
+		return lockStatusData{}, err
+	}
+	return lsd, nil
 }
 
 // Annotations for generating swagger docs:
@@ -548,6 +575,32 @@ func apiFunc(cc *configCache, timeout time.Duration, flConfiger fleetlock.FleetL
 		logger := hlog.FromRequest(r)
 
 		switch r.Method {
+		case "GET":
+
+			lsd, err := getGroups(r.Context(), timeout, cc, logger)
+			if err != nil {
+				message := "unable to get lock status"
+				logger.Err(err).Msg(message)
+				err := apiSendError(w, message, http.StatusBadRequest)
+				if err != nil {
+					logger.Err(err).Msgf("unable to send API GET error")
+				}
+				return
+			}
+
+			b, err := json.Marshal(lsd)
+			if err != nil {
+				logger.Err(err).Msg("unable to marshal locksStatusData in API GET")
+				http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+				return
+			}
+
+			err = writeNewlineJSON(w, b, http.StatusOK)
+			if err != nil {
+				logger.Err(err).Msg("failed writing lockStatusData in API GET")
+				return
+			}
+
 		case "POST":
 
 			ctx, cancel := context.WithTimeout(r.Context(), timeout)
@@ -1580,6 +1633,7 @@ func newRouter(preRebootChain, steadyStateChain, lockStatusChain, staleLocksChai
 	router.Handler("POST", "/v1/steady-state", steadyStateChain)
 	router.Handler("GET", "/lock-status", lockStatusChain)
 	router.Handler("GET", "/stale-locks", staleLocksChain)
+	router.Handler("GET", "/api/v1/groups", apiChain)
 	router.Handler("POST", "/api/v1/groups", apiChain)
 	router.Handler("DELETE", "/api/v1/groups/:group", apiChain)
 	router.Handler("GET", "/swagger/*any", swaggerChain)
