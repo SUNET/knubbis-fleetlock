@@ -1583,6 +1583,7 @@ func newRouter(preRebootChain, steadyStateChain, lockStatusChain, staleLocksChai
 	router.Handler("POST", "/api/v1/groups", apiChain)
 	router.Handler("DELETE", "/api/v1/groups/:group", apiChain)
 	router.Handler("GET", "/swagger/*any", swaggerChain)
+	router.Handler("GET", "/", http.RedirectHandler("/swagger/index.html", http.StatusFound))
 
 	return router
 }
