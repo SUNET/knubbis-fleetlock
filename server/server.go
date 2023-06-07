@@ -996,117 +996,151 @@ type ipLimiter struct {
 	lastSeen time.Time
 }
 
+func validFleetLockHeader(logger *zerolog.Logger, w http.ResponseWriter, r *http.Request) bool {
+	// Verify that a valid FleetLock header is present
+	// https://coreos.github.io/zincati/development/fleetlock/protocol/#headers
+	// Returns true if all is good, otherwise false
+	if r.Header.Get(fleetLockProtocolName) != "true" {
+		logger.Warn().
+			Msgf("missing '%s' header", fleetLockProtocolName)
+
+		err := fleetLockSendError("invalid_fleetlock_header", fmt.Sprintf("'%s' header must be set to 'true'", fleetLockProtocolName), http.StatusBadRequest, w)
+		if err != nil {
+			logger.Err(err).Msg("failed sending FleetLock error to client")
+			w.WriteHeader(http.StatusInternalServerError)
+			return false
+		}
+		return false
+	}
+
+	return true
+}
+
+func decodeFleetLockBody(logger *zerolog.Logger, w http.ResponseWriter, r *http.Request) (fleetlock.FleetLockBody, error) {
+	fld := fleetlock.FleetLockBody{}
+
+	err := json.NewDecoder(r.Body).Decode(&fld)
+	if err != nil {
+		if err == io.EOF {
+			logger.Error().Msg("FleetLock body is empty")
+			err := fleetLockSendError("empty_fleetlock_body", "body is empty", http.StatusBadRequest, w)
+			if err != nil {
+				logger.Err(err).Msg("failed sending empty body error to client")
+				return fleetlock.FleetLockBody{}, err
+			}
+		} else {
+			logger.Err(err).Msg("failed decoding FleetLock body")
+			err := fleetLockSendError("bad_fleetlock_body", "body must contain valid data", http.StatusBadRequest, w)
+			if err != nil {
+				logger.Err(err).Msg("failed sending invalid body error to client")
+				return fleetlock.FleetLockBody{}, err
+			}
+		}
+		return fleetlock.FleetLockBody{}, err
+	}
+
+	return fld, nil
+}
+
+func validFleetLockGroupName(logger *zerolog.Logger, fld fleetlock.FleetLockBody, w http.ResponseWriter) bool {
+	// The spec does not specify a maximum length
+	// for the group name but it seems reasonable to
+	// not accept an unlimited length. Below we set
+	// a 253 characters limit for ID based on the
+	// maximume length of a hostname, for now just
+	// reuse this here, since it should fit most
+	// group names you would come up with.
+	if len(fld.ClientParams.Group) > 253 {
+		logger.Error().Msg("FleetLock group name too long")
+
+		err := fleetLockSendError("invalid_group", "group name is too long", http.StatusBadRequest, w)
+		if err != nil {
+			logger.Err(err).Msg("failed sending FleetLock group name too long error to client")
+			w.WriteHeader(http.StatusInternalServerError)
+			return false
+		}
+	}
+
+	if !fleetlock.ValidGroup.MatchString(fld.ClientParams.Group) {
+		logger.Error().Msg("group is not a valid name")
+
+		err := fleetLockSendError("invalid_group", "group name is not valid", http.StatusBadRequest, w)
+		if err != nil {
+			logger.Err(err).Msg("failed sending FleetLock invalid group name error to client")
+			w.WriteHeader(http.StatusInternalServerError)
+			return false
+		}
+		return false
+	}
+	return true
+}
+
+func validFleetLockID(logger *zerolog.Logger, fld fleetlock.FleetLockBody, w http.ResponseWriter) bool {
+	// The spec does not specify a maximum length
+	// for the ID but it seems reasonable to
+	// not accept an unlimited length. The examples
+	// given for ID at
+	// https://coreos.github.io/zincati/development/fleetlock/protocol/#body
+	// are "node name or UUID". A UUID is 36
+	// characters long in the "canonical textual
+	// representation":
+	// https://en.wikipedia.org/wiki/Universally_unique_identifier
+	// ... while a maximum hostname is 253
+	// characters:
+	// https://en.wikipedia.org/wiki/Hostname
+	// so set the limit at 253 characters for now
+	if len(fld.ClientParams.ID) > 253 {
+		logger.Error().Msg("FleetLock ID too long")
+
+		err := fleetLockSendError("invalid_id", "ID is too long", http.StatusBadRequest, w)
+		if err != nil {
+			logger.Err(err).Msg("failed sending FleetLock ID too long error to client")
+			w.WriteHeader(http.StatusInternalServerError)
+			return false
+		}
+		return false
+	}
+
+	// Even tough the spec mentions nothing
+	// regarding allowed characters in IDs, since
+	// the examples are UUID and node name we can
+	// reuse the group name filter which is general
+	// enough to fit any valid characters in those
+	// usages, can be changed later if we need to
+	// support more characters.
+	if !fleetlock.ValidGroup.MatchString(fld.ClientParams.ID) {
+		logger.Error().Msg("FleetLock ID is invalid")
+
+		err := fleetLockSendError("invalid_id", "ID is not valid", http.StatusBadRequest, w)
+		if err != nil {
+			logger.Err(err).Msg("failed sending FleetLock invalid ID error to client")
+			w.WriteHeader(http.StatusInternalServerError)
+			return false
+		}
+		return false
+	}
+	return true
+}
+
 func fleetLockValidatorMiddleware() alice.Constructor {
 	return func(h http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			logger := hlog.FromRequest(r)
-			// Verify that a valid FleetLock header is present
-			// https://coreos.github.io/zincati/development/fleetlock/protocol/#headers
-			if r.Header.Get(fleetLockProtocolName) != "true" {
-				logger.Warn().
-					Msgf("missing '%s' header", fleetLockProtocolName)
 
-				err := fleetLockSendError("invalid_fleetlock_header", fmt.Sprintf("'%s' header must be set to 'true'", fleetLockProtocolName), http.StatusBadRequest, w)
-				if err != nil {
-					logger.Err(err).Msg("failed sending FleetLock error to client")
-					w.WriteHeader(http.StatusInternalServerError)
-					return
-				}
+			if !validFleetLockHeader(logger, w, r) {
 				return
 			}
-			fld := fleetlock.FleetLockBody{}
 
-			err := json.NewDecoder(r.Body).Decode(&fld)
+			fld, err := decodeFleetLockBody(logger, w, r)
 			if err != nil {
-				if err == io.EOF {
-					logger.Error().Msg("FleetLock body is empty")
-					err := fleetLockSendError("empty_fleetlock_body", "body is empty", http.StatusBadRequest, w)
-					if err != nil {
-						logger.Err(err).Msg("failed sending empty body error to client")
-						return
-					}
-				} else {
-					logger.Err(err).Msg("failed decoding FleetLock body")
-					err := fleetLockSendError("bad_fleetlock_body", "body must contain valid data", http.StatusBadRequest, w)
-					if err != nil {
-						logger.Err(err).Msg("failed sending invalid body error to client")
-						return
-					}
-				}
 				return
 			}
 
-			// The spec does not specify a maximum length
-			// for the group name but it seems reasonable to
-			// not accept an unlimited length. Below we set
-			// a 253 characters limit for ID based on the
-			// maximume length of a hostname, for now just
-			// reuse this here, since it should fit most
-			// group names you would come up with.
-			if len(fld.ClientParams.Group) > 253 {
-				logger.Error().Msg("FleetLock group name too long")
-
-				err := fleetLockSendError("invalid_group", "group name is too long", http.StatusBadRequest, w)
-				if err != nil {
-					logger.Err(err).Msg("failed sending FleetLock group name too long error to client")
-					w.WriteHeader(http.StatusInternalServerError)
-					return
-				}
-			}
-
-			if !fleetlock.ValidGroup.MatchString(fld.ClientParams.Group) {
-				logger.Error().Msg("group is not a valid name")
-
-				err := fleetLockSendError("invalid_group", "group name is not valid", http.StatusBadRequest, w)
-				if err != nil {
-					logger.Err(err).Msg("failed sending FleetLock invalid group name error to client")
-					w.WriteHeader(http.StatusInternalServerError)
-					return
-				}
+			if !validFleetLockGroupName(logger, fld, w) {
 				return
 			}
 
-			// The spec does not specify a maximum length
-			// for the ID but it seems reasonable to
-			// not accept an unlimited length. The examples
-			// given for ID at
-			// https://coreos.github.io/zincati/development/fleetlock/protocol/#body
-			// are "node name or UUID". A UUID is 36
-			// characters long in the "canonical textual
-			// representation":
-			// https://en.wikipedia.org/wiki/Universally_unique_identifier
-			// ... while a maximum hostname is 253
-			// characters:
-			// https://en.wikipedia.org/wiki/Hostname
-			// so set the limit at 253 characters for now
-			if len(fld.ClientParams.ID) > 253 {
-				logger.Error().Msg("FleetLock ID too long")
-
-				err := fleetLockSendError("invalid_id", "ID is too long", http.StatusBadRequest, w)
-				if err != nil {
-					logger.Err(err).Msg("failed sending FleetLock ID too long error to client")
-					w.WriteHeader(http.StatusInternalServerError)
-					return
-				}
-				return
-			}
-
-			// Even tough the spec mentions nothing
-			// regarding allowed characters in IDs, since
-			// the examples are UUID and node name we can
-			// reuse the group name filter which is general
-			// enough to fit any valid characters in those
-			// usages, can be changed later if we need to
-			// support more characters.
-			if !fleetlock.ValidGroup.MatchString(fld.ClientParams.ID) {
-				logger.Error().Msg("FleetLock ID is invalid")
-
-				err := fleetLockSendError("invalid_id", "ID is not valid", http.StatusBadRequest, w)
-				if err != nil {
-					logger.Err(err).Msg("failed sending FleetLock invalid ID error to client")
-					w.WriteHeader(http.StatusInternalServerError)
-					return
-				}
+			if !validFleetLockID(logger, fld, w) {
 				return
 			}
 
