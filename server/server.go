@@ -856,6 +856,82 @@ func createLoginCacheKey(key string, expectedPasswordHash hashing.HashedPassword
 	return hashedCacheKey
 }
 
+func getCachedKeys(logger *zerolog.Logger, loginCache *lru.Cache, keys []string, flattenedPerms map[string]hashing.HashedPassword, password string) (bool, []string) {
+	validLogin := false
+
+	foundKeys := []string{}
+
+	for _, key := range keys {
+		expectedPasswordHash, ok := flattenedPerms[key]
+
+		if !ok {
+			// The key does not exist, try with the next one
+			continue
+		}
+
+		foundKeys = append(foundKeys, key)
+
+		hashedCacheKey := createLoginCacheKey(key, expectedPasswordHash, password)
+
+		if _, ok = loginCache.Get(hashedCacheKey); ok {
+			logger.Info().Msgf("login cache hit for key '%s'", key)
+			validLogin = true
+		}
+	}
+
+	return validLogin, foundKeys
+}
+
+func keyHashComparision(logger *zerolog.Logger, foundKeys []string, flattenedPerms map[string]hashing.HashedPassword, loginCache *lru.Cache, password string) bool {
+	validLogin := false
+	for _, key := range foundKeys {
+		expectedPasswordHash, ok := flattenedPerms[key]
+
+		if !ok {
+			// The key does not exist, try with the next one
+			logger.Info().Msgf("should have found key '%s' since it was found previously, please investigate", key)
+			continue
+		}
+
+		logger.Info().Msgf("login cache miss for key '%s'", key)
+
+		argonSettings := hashing.NewArgonSettings(
+			expectedPasswordHash.ArgonTime,
+			expectedPasswordHash.ArgonMemory,
+			expectedPasswordHash.ArgonThreads,
+			expectedPasswordHash.ArgonHashSize,
+		)
+
+		// The API passwords in the config are
+		// stored argon2 hashed in the database.
+		// Now hash the client supplied password
+		// so we can compare strings of equal
+		// length with
+		// subtle.ConstantTimeCompare()
+		hashedPassword := hashing.GetHashedPassword(
+			password,
+			expectedPasswordHash.Salt,
+			argonSettings,
+		)
+
+		// Use subtle.ConstantTimeCompare() in an attempt to
+		// not leak password contents via timing attack
+		passwordMatch := (subtle.ConstantTimeCompare(hashedPassword.Hash, expectedPasswordHash.Hash) == 1)
+		if passwordMatch {
+			validLogin = true
+			hashedCacheKey := createLoginCacheKey(key, expectedPasswordHash, password)
+			evicted := loginCache.Add(hashedCacheKey, true)
+			if evicted {
+				logger.Info().Msg("adding key to loginCache resulted in eviction")
+			}
+			break
+		}
+
+	}
+
+	return validLogin
+}
+
 func flBasicAuthMiddleware(cc *configCache, loginCache *lru.Cache) alice.Constructor {
 	return func(h http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -885,79 +961,16 @@ func flBasicAuthMiddleware(cc *configCache, loginCache *lru.Cache) alice.Constru
 
 			keys := []string{groupWildcardKey, groupIDKey}
 
-			validLogin := false
-
 			flattenedPerms := cc.getPerms()
 
-			foundKeys := []string{}
-
-			// Check if we have a cache hit for any of the
-			// keys first
-			for _, key := range keys {
-				expectedPasswordHash, ok := flattenedPerms[key]
-
-				if !ok {
-					// The key does not exist, try with the next one
-					continue
-				}
-
-				foundKeys = append(foundKeys, key)
-
-				hashedCacheKey := createLoginCacheKey(key, expectedPasswordHash, password)
-
-				if _, ok = loginCache.Get(hashedCacheKey); ok {
-					logger.Info().Msgf("login cache hit for key '%s'", key)
-					validLogin = true
-				}
-			}
+			// Check if we have a cache hit for any of the keys
+			// first
+			validLogin, foundKeys := getCachedKeys(logger, loginCache, keys, flattenedPerms, password)
 
 			// If successful login was not found in cache, but we
 			// did find a matching key, do hash comparision:
 			if !validLogin && len(foundKeys) > 0 {
-				for _, key := range foundKeys {
-					expectedPasswordHash, ok := flattenedPerms[key]
-
-					if !ok {
-						// The key does not exist, try with the next one
-						logger.Info().Msgf("should have found key '%s' since it was found previously, please investigate", key)
-						continue
-					}
-
-					logger.Info().Msgf("login cache miss for key '%s'", key)
-
-					argonSettings := hashing.NewArgonSettings(
-						expectedPasswordHash.ArgonTime,
-						expectedPasswordHash.ArgonMemory,
-						expectedPasswordHash.ArgonThreads,
-						expectedPasswordHash.ArgonHashSize,
-					)
-
-					// The API passwords in the config are
-					// stored argon2 hashed in the database.
-					// Now hash the client supplied password
-					// so we can compare strings of equal
-					// length with
-					// subtle.ConstantTimeCompare()
-					hashedPassword := hashing.GetHashedPassword(
-						password,
-						expectedPasswordHash.Salt,
-						argonSettings,
-					)
-
-					// Use subtle.ConstantTimeCompare() in an attempt to
-					// not leak password contents via timing attack
-					passwordMatch := (subtle.ConstantTimeCompare(hashedPassword.Hash, expectedPasswordHash.Hash) == 1)
-					if passwordMatch {
-						validLogin = true
-						hashedCacheKey := createLoginCacheKey(key, expectedPasswordHash, password)
-						evicted := loginCache.Add(hashedCacheKey, true)
-						if evicted {
-							logger.Info().Msg("adding key to loginCache resulted in eviction")
-						}
-						break
-					}
-
-				}
+				validLogin = keyHashComparision(logger, foundKeys, flattenedPerms, loginCache, password)
 			}
 
 			if validLogin {
