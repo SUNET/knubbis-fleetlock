@@ -702,30 +702,39 @@ func apiFunc(cc *configCache, timeout time.Duration, flConfiger fleetlock.FleetL
 	}
 }
 
+func getStaleLocksData(logger *zerolog.Logger, timeout time.Duration, cc *configCache, w http.ResponseWriter, r *http.Request) (staleLocksData, error) {
+	sld := staleLocksData{
+		Groups: map[string][]string{},
+	}
+
+	lockerCtx, lockerCancel := context.WithTimeout(r.Context(), timeout)
+	defer lockerCancel()
+
+	for group, locker := range cc.getMap() {
+		ls, err := locker.LockStatus(lockerCtx)
+		if err != nil {
+			logger.Err(err).Msgf("unable to get LockStatus for group '%s'", group)
+			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+			return staleLocksData{}, err
+		}
+		for _, holder := range ls.Holders {
+			if time.Since(holder.LockTime) > holder.StaleAge.Duration {
+				sld.StaleLocks = true
+				sld.Groups[group] = append(sld.Groups[group], holder.ID)
+			}
+		}
+	}
+
+	return sld, nil
+}
+
 func staleLocksFunc(cc *configCache, timeout time.Duration) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		logger := hlog.FromRequest(r)
 
-		sld := staleLocksData{
-			Groups: map[string][]string{},
-		}
-
-		lockerCtx, lockerCancel := context.WithTimeout(r.Context(), timeout)
-		defer lockerCancel()
-
-		for group, locker := range cc.getMap() {
-			ls, err := locker.LockStatus(lockerCtx)
-			if err != nil {
-				logger.Err(err).Msgf("unable to get LockStatus for group '%s'", group)
-				http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-				return
-			}
-			for _, holder := range ls.Holders {
-				if time.Since(holder.LockTime) > holder.StaleAge.Duration {
-					sld.StaleLocks = true
-					sld.Groups[group] = append(sld.Groups[group], holder.ID)
-				}
-			}
+		sld, err := getStaleLocksData(logger, timeout, cc, w, r)
+		if err != nil {
+			return
 		}
 
 		b, err := json.Marshal(sld)
