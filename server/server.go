@@ -567,6 +567,99 @@ func delGroup(ctx context.Context, flConfiger fleetlock.FleetLockConfiger, group
 	return nil
 }
 
+func apiHandleGet(logger *zerolog.Logger, cc *configCache, timeout time.Duration, w http.ResponseWriter, r *http.Request) bool {
+	lsd, err := getGroups(r.Context(), timeout, cc, logger)
+	if err != nil {
+		message := "unable to get lock status"
+		logger.Err(err).Msg(message)
+		err := apiSendError(w, message, http.StatusBadRequest)
+		if err != nil {
+			logger.Err(err).Msgf("unable to send API GET error")
+		}
+		return false
+	}
+
+	b, err := json.Marshal(lsd)
+	if err != nil {
+		logger.Err(err).Msg("unable to marshal locksStatusData in API GET")
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return false
+	}
+
+	err = writeNewlineJSON(w, b, http.StatusOK)
+	if err != nil {
+		logger.Err(err).Msg("failed writing lockStatusData in API GET")
+		return false
+	}
+
+	return true
+}
+
+func apiHandlePost(logger *zerolog.Logger, timeout time.Duration, flConfiger fleetlock.FleetLockConfiger, w http.ResponseWriter, r *http.Request) bool {
+	ctx, cancel := context.WithTimeout(r.Context(), timeout)
+	defer cancel()
+
+	agd := addGroupModel{}
+	err := json.NewDecoder(r.Body).Decode(&agd)
+	if err != nil {
+		if err == io.EOF {
+			logger.Error().Msg("API body is empty")
+			err = apiSendError(w, "API body is empty", http.StatusBadRequest)
+			if err != nil {
+				logger.Err(err).Msgf("unable to send API error")
+			}
+		} else {
+			logger.Err(err).Msg("failed decoding API body")
+			err = apiSendError(w, "failed decoding API body", http.StatusBadRequest)
+			if err != nil {
+				logger.Err(err).Msgf("unable to send API error")
+			}
+		}
+		return false
+	}
+
+	err = addGroup(ctx, flConfiger, agd)
+	if err != nil {
+		message := fmt.Sprintf("unable to add group '%s'", agd.Name)
+		logger.Err(err).Msgf(message)
+		err := apiSendError(w, message, http.StatusBadRequest)
+		if err != nil {
+			logger.Err(err).Msgf("unable to send group add error")
+		}
+
+		return false
+	}
+	return true
+}
+
+func apiHandleDelete(logger *zerolog.Logger, timeout time.Duration, flConfiger fleetlock.FleetLockConfiger, w http.ResponseWriter, r *http.Request) bool {
+	params := httprouter.ParamsFromContext(r.Context())
+
+	group := params.ByName("group")
+	if !fleetlock.ValidGroup.MatchString(group) {
+		logger.Error().Msg("invalid group name")
+		http.Error(w, "invalid group name", http.StatusBadRequest)
+		return false
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), timeout)
+	defer cancel()
+
+	err := delGroup(ctx, flConfiger, group)
+	if err != nil {
+		message := fmt.Sprintf("unable to delete group '%s'", group)
+		logger.Err(err).Msgf(message)
+		err := apiSendError(w, message, http.StatusInternalServerError)
+		if err != nil {
+			logger.Err(err).Msgf("unable to send group add error response")
+		}
+		return false
+	}
+
+	return true
+
+}
+
 // apiFunc is the gateway to calling other API functions, this way we do
 // not need to create one middleware chain per request type.
 func apiFunc(cc *configCache, timeout time.Duration, flConfiger fleetlock.FleetLockConfiger) http.HandlerFunc {
@@ -576,86 +669,16 @@ func apiFunc(cc *configCache, timeout time.Duration, flConfiger fleetlock.FleetL
 
 		switch r.Method {
 		case "GET":
-
-			lsd, err := getGroups(r.Context(), timeout, cc, logger)
-			if err != nil {
-				message := "unable to get lock status"
-				logger.Err(err).Msg(message)
-				err := apiSendError(w, message, http.StatusBadRequest)
-				if err != nil {
-					logger.Err(err).Msgf("unable to send API GET error")
-				}
+			if !apiHandleGet(logger, cc, timeout, w, r) {
 				return
 			}
-
-			b, err := json.Marshal(lsd)
-			if err != nil {
-				logger.Err(err).Msg("unable to marshal locksStatusData in API GET")
-				http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-				return
-			}
-
-			err = writeNewlineJSON(w, b, http.StatusOK)
-			if err != nil {
-				logger.Err(err).Msg("failed writing lockStatusData in API GET")
-				return
-			}
-
 		case "POST":
-
-			ctx, cancel := context.WithTimeout(r.Context(), timeout)
-			defer cancel()
-
-			agd := addGroupModel{}
-			err := json.NewDecoder(r.Body).Decode(&agd)
-			if err != nil {
-				if err == io.EOF {
-					logger.Error().Msg("API body is empty")
-					err = apiSendError(w, "API body is empty", http.StatusBadRequest)
-					if err != nil {
-						logger.Err(err).Msgf("unable to send API error")
-					}
-				} else {
-					logger.Err(err).Msg("failed decoding API body")
-					err = apiSendError(w, "failed decoding API body", http.StatusBadRequest)
-					if err != nil {
-						logger.Err(err).Msgf("unable to send API error")
-					}
-				}
+			if !apiHandlePost(logger, timeout, flConfiger, w, r) {
 				return
 			}
-
-			err = addGroup(ctx, flConfiger, agd)
-			if err != nil {
-				message := fmt.Sprintf("unable to add group '%s'", agd.Name)
-				logger.Err(err).Msgf(message)
-				err := apiSendError(w, message, http.StatusBadRequest)
-				if err != nil {
-					logger.Err(err).Msgf("unable to send group add error")
-				}
-			}
-
 		case "DELETE":
-			params := httprouter.ParamsFromContext(r.Context())
-
-			group := params.ByName("group")
-			if !fleetlock.ValidGroup.MatchString(group) {
-				logger.Error().Msg("invalid group name")
-				http.Error(w, "invalid group name", http.StatusBadRequest)
+			if !apiHandleDelete(logger, timeout, flConfiger, w, r) {
 				return
-			}
-
-			ctx, cancel := context.WithTimeout(r.Context(), timeout)
-			defer cancel()
-
-			err := delGroup(ctx, flConfiger, group)
-			if err != nil {
-				message := fmt.Sprintf("unable to delete group '%s'", group)
-				logger.Err(err).Msgf(message)
-				err := apiSendError(w, message, http.StatusInternalServerError)
-				if err != nil {
-					logger.Err(err).Msgf("unable to send group add error response")
-				}
 			}
 		default:
 			message := fmt.Sprintf("unsupported HTTP method: '%s'", r.Method)
