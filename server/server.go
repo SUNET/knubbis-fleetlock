@@ -1338,24 +1338,7 @@ func newIPLimiter() *rateLimiter {
 	}
 }
 
-func Run(configPath string) {
-	service := "knubbis-fleetlock"
-
-	hostname, err := os.Hostname()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "unable to get hostname, can not setup logging")
-		os.Exit(1)
-	}
-
-	logger := newLogger(service, hostname)
-
-	logger.Info().Msgf("starting server")
-
-	conf, err := newConfig(configPath)
-	if err != nil {
-		logger.Fatal().Err(err).Msg("unable to create server config")
-	}
-
+func setupEtcd3Client(logger zerolog.Logger, conf serverConfig) *clientv3.Client {
 	etcd3TLSConfig := &tls.Config{InsecureSkipVerify: conf.Etcd3.InsecureSkipVerify} // #nosec this is configurable for testing
 
 	if conf.Etcd3.RootCAPath != "" {
@@ -1385,6 +1368,167 @@ func Run(configPath string) {
 			Err(err).
 			Msg("cannot create etcd3 client")
 	}
+
+	return etcd3Client
+}
+
+func getEncryptionKey(logger zerolog.Logger, conf serverConfig) []byte {
+	if len(conf.CertMagic.Salt) != 32 {
+		logger.Fatal().
+			Err(errors.New("invalid salt")).
+			Msg("certmagic salt must be 32 hex characters long")
+	}
+	salt, err := hashing.SaltFromHex(conf.CertMagic.Salt)
+	if err != nil {
+		logger.Fatal().Err(err).Msg("cannot decode salt hex")
+	}
+
+	// AES-256 needs a 32 byte-key
+	AESKeyLen := uint32(32)
+	aes256ArgonSettings := hashing.NewArgonSettings(conf.CertMagic.ArgonTime, conf.CertMagic.ArgonMemory, conf.CertMagic.ArgonThreads, AESKeyLen)
+
+	hashedPassword := hashing.GetHashedPassword(
+		conf.CertMagic.Password,
+		salt,
+		aes256ArgonSettings,
+	)
+
+	return hashedPassword.Hash
+}
+
+func setupACME(logger zerolog.Logger, conf serverConfig, service string) *tls.Config {
+
+	// We only expect to use the DNS challenge as this service is
+	// not exposed to the internet.
+	certmagic.DefaultACME.DisableTLSALPNChallenge = true
+
+	acmednsProvider := &acmedns.Provider{Configs: map[string]acmedns.DomainConfig{}}
+
+	for domain, domainSettings := range conf.AcmeDNS {
+		logger.Info().Msgf("configuring acme-dns settings for domain '%s'", domain)
+		acmednsProvider.Configs[domain] = acmedns.DomainConfig{
+			Username:   domainSettings.Username,
+			Password:   domainSettings.Password,
+			Subdomain:  domainSettings.Subdomain,
+			FullDomain: domainSettings.FullDomain,
+			ServerURL:  domainSettings.ServerURL,
+		}
+	}
+
+	// Enable DNS challenge
+	certmagic.DefaultACME.DNS01Solver = &certmagic.DNS01Solver{
+		DNSProvider: acmednsProvider,
+	}
+
+	if !conf.CertMagic.LetsEncryptProd {
+		logger.Info().Msg("using LetsEncrypt Staging CA, TLS certificates will not be trusted")
+		certmagic.DefaultACME.CA = certmagic.LetsEncryptStagingCA
+	}
+
+	// read and agree to your CA's legal documents
+	certmagic.DefaultACME.Agreed = true
+
+	// provide an email address
+	certmagic.DefaultACME.Email = conf.CertMagic.Email
+
+	tlsConfig, err := certmagic.TLS(conf.CertMagic.Domains)
+	if err != nil {
+		logger.Fatal().
+			Err(err).
+			Msgf("cannot create tlsconfig %s", service)
+	}
+
+	return tlsConfig
+}
+
+func buildServiceURL(logger zerolog.Logger, conf serverConfig) string {
+	_, listenPort, err := net.SplitHostPort(conf.Server.Listen)
+	if err != nil {
+		logger.Fatal().Err(err).Msgf("unable to split out port from listen address '%s'", conf.Server.Listen)
+	}
+
+	listenPortInt, err := strconv.Atoi(listenPort)
+	if err != nil {
+		logger.Fatal().Err(err).Msgf("unable to convert listening port to int: '%s'", listenPort)
+	}
+
+	// Default to using the same port as the process is listening on
+	servicePort := listenPort
+
+	// If the service is running in a container and clients reach the
+	// service on another port than the process is listening on we need
+	// to advertise the port exposed to clients, not the port the process
+	// is listening on.
+	if conf.Server.ExposedPort != 0 && conf.Server.ExposedPort != listenPortInt {
+		servicePort = strconv.Itoa(conf.Server.ExposedPort)
+	}
+
+	serviceURLString := conf.CertMagic.Domains[0]
+
+	// Only include the :port if non-default for HTTPS
+	if servicePort != "443" {
+		serviceURLString = serviceURLString + ":" + servicePort
+	}
+
+	return serviceURLString
+}
+
+func buildSwaggerURL(logger zerolog.Logger, conf serverConfig) *url.URL {
+	serviceURLString := buildServiceURL(logger, conf)
+
+	// This path is expected by the http-swagger module
+	swaggerURLString := serviceURLString + "/swagger/doc.json"
+	swaggerURLString = "https://" + swaggerURLString
+
+	// Override default Host string from comments above with where
+	// the server is actually serving the API
+	docs.SwaggerInfo.Host = serviceURLString
+
+	swaggerURL, err := url.Parse(swaggerURLString)
+	if err != nil {
+		logger.Fatal().Err(err).Msgf("unable to parse swagger URL string: '%s'", swaggerURLString)
+	}
+
+	logger.Info().Msgf("using swagger URL '%s'", swaggerURL)
+
+	return swaggerURL
+}
+
+func startGracefulShutdowner(logger zerolog.Logger, conf serverConfig, srv *http.Server, idleConnsClosed chan struct{}) {
+	go func(logger zerolog.Logger, shutdownDelay time.Duration) {
+		sigChan := make(chan os.Signal, 1)
+		signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+		s := <-sigChan
+
+		logger.Info().Msgf("received '%s' signal, sleeping for %s then calling Shutdown()", s, shutdownDelay)
+		time.Sleep(shutdownDelay)
+		if err := srv.Shutdown(context.Background()); err != nil {
+			// Error from closing listeners, or context timeout:
+			logger.Err(err).Msg("HTTP server Shutdown failure")
+		}
+		close(idleConnsClosed)
+	}(logger, conf.Server.ShutdownDelay.Duration)
+}
+
+func Run(configPath string) {
+	service := "knubbis-fleetlock"
+
+	hostname, err := os.Hostname()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "unable to get hostname, can not setup logging")
+		os.Exit(1)
+	}
+
+	logger := newLogger(service, hostname)
+
+	logger.Info().Msgf("starting server")
+
+	conf, err := newConfig(configPath)
+	if err != nil {
+		logger.Fatal().Err(err).Msg("unable to create server config")
+	}
+
+	etcd3Client := setupEtcd3Client(logger, conf)
 
 	// Timeout when interacting with backend like locking/unlocking
 	// a semaphore or other operations.
@@ -1461,113 +1605,15 @@ func Run(configPath string) {
 
 	apiChain := alice.New(apiMiddlewares...).Then(apiFunc(cc, timeout, flConfiger))
 
-	if len(conf.CertMagic.Salt) != 32 {
-		logger.Fatal().
-			Err(errors.New("invalid salt")).
-			Msg("certmagic salt must be 32 hex characters long")
-	}
-	salt, err := hashing.SaltFromHex(conf.CertMagic.Salt)
-	if err != nil {
-		logger.Fatal().Err(err).Msg("cannot decode salt hex")
-	}
-
-	// AES-256 needs a 32 byte-key
-	AESKeyLen := uint32(32)
-	aes256ArgonSettings := hashing.NewArgonSettings(conf.CertMagic.ArgonTime, conf.CertMagic.ArgonMemory, conf.CertMagic.ArgonThreads, AESKeyLen)
-
-	hashedPassword := hashing.GetHashedPassword(
-		conf.CertMagic.Password,
-		salt,
-		aes256ArgonSettings,
-	)
-
-	key := hashedPassword.Hash
+	key := getEncryptionKey(logger, conf)
 
 	// Persist certmagic data in etcd3
 	cmStorage := etcd3storage.New(etcd3Client, conf.CertMagic.Etcd3Path, key, logger)
 	certmagic.Default.Storage = cmStorage
 
-	// We only expect to use the DNS challenge as this service is
-	// not exposed to the internet.
-	certmagic.DefaultACME.DisableTLSALPNChallenge = true
+	tlsConfig := setupACME(logger, conf, service)
 
-	acmednsProvider := &acmedns.Provider{Configs: map[string]acmedns.DomainConfig{}}
-
-	for domain, domainSettings := range conf.AcmeDNS {
-		logger.Info().Msgf("configuring acme-dns settings for domain '%s'", domain)
-		acmednsProvider.Configs[domain] = acmedns.DomainConfig{
-			Username:   domainSettings.Username,
-			Password:   domainSettings.Password,
-			Subdomain:  domainSettings.Subdomain,
-			FullDomain: domainSettings.FullDomain,
-			ServerURL:  domainSettings.ServerURL,
-		}
-	}
-
-	// Enable DNS challenge
-	certmagic.DefaultACME.DNS01Solver = &certmagic.DNS01Solver{
-		DNSProvider: acmednsProvider,
-	}
-
-	if !conf.CertMagic.LetsEncryptProd {
-		logger.Info().Msg("using LetsEncrypt Staging CA, TLS certificates will not be trusted")
-		certmagic.DefaultACME.CA = certmagic.LetsEncryptStagingCA
-	}
-
-	// read and agree to your CA's legal documents
-	certmagic.DefaultACME.Agreed = true
-
-	// provide an email address
-	certmagic.DefaultACME.Email = conf.CertMagic.Email
-
-	tlsConfig, err := certmagic.TLS(conf.CertMagic.Domains)
-	if err != nil {
-		logger.Fatal().
-			Err(err).
-			Msgf("cannot create tlsconfig %s", service)
-	}
-
-	_, listenPort, err := net.SplitHostPort(conf.Server.Listen)
-	if err != nil {
-		logger.Fatal().Err(err).Msgf("unable to split out port from listen address '%s'", conf.Server.Listen)
-	}
-
-	listenPortInt, err := strconv.Atoi(listenPort)
-	if err != nil {
-		logger.Fatal().Err(err).Msgf("unable to convert listening port to int: '%s'", listenPort)
-	}
-
-	// Default to using the same port as the process is listening on
-	servicePort := listenPort
-
-	// If the service is running in a container and clients reach the
-	// service on another port than the process is listening on we need
-	// to advertise the port exposed to clients, not the port the process
-	// is listening on.
-	if conf.Server.ExposedPort != 0 && conf.Server.ExposedPort != listenPortInt {
-		servicePort = strconv.Itoa(conf.Server.ExposedPort)
-	}
-
-	serviceURLString := conf.CertMagic.Domains[0]
-
-	// Only include the :port if non-default for HTTPS
-	if servicePort != "443" {
-		serviceURLString = serviceURLString + ":" + servicePort
-	}
-	// This path is expected by the http-swagger module
-	swaggerURLString := serviceURLString + "/swagger/doc.json"
-	swaggerURLString = "https://" + swaggerURLString
-
-	// Override default Host string from comments above with where
-	// the server is actually serving the API
-	docs.SwaggerInfo.Host = serviceURLString
-
-	swaggerURL, err := url.Parse(swaggerURLString)
-	if err != nil {
-		logger.Fatal().Err(err).Msgf("unable to parse swagger URL string: '%s'", swaggerURLString)
-	}
-
-	logger.Info().Msgf("using swagger URL '%s'", swaggerURL)
+	swaggerURL := buildSwaggerURL(logger, conf)
 
 	swaggerChain := alice.New(swaggerMiddlewares...).Then(httpSwagger.Handler(httpSwagger.URL(swaggerURL.String())))
 
@@ -1584,19 +1630,8 @@ func Run(configPath string) {
 
 	// Handle graceful shutdown of HTTP server when receiving signal
 	idleConnsClosed := make(chan struct{})
-	go func(logger zerolog.Logger, shutdownDelay time.Duration) {
-		sigChan := make(chan os.Signal, 1)
-		signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-		s := <-sigChan
 
-		logger.Info().Msgf("received '%s' signal, sleeping for %s then calling Shutdown()", s, shutdownDelay)
-		time.Sleep(shutdownDelay)
-		if err := srv.Shutdown(context.Background()); err != nil {
-			// Error from closing listeners, or context timeout:
-			logger.Err(err).Msg("HTTP server Shutdown failure")
-		}
-		close(idleConnsClosed)
-	}(logger, conf.Server.ShutdownDelay.Duration)
+	startGracefulShutdowner(logger, conf, srv, idleConnsClosed)
 
 	promMux := http.NewServeMux()
 
