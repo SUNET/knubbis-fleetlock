@@ -766,6 +766,42 @@ func writeNewlineJSON(w http.ResponseWriter, b []byte, statusCode int) error {
 	return nil
 }
 
+func allowedByLimiter(logger *zerolog.Logger, rl *rateLimiter, addrPort netip.AddrPort, conf serverConfig, w http.ResponseWriter) bool {
+	// Because both nonexisting and existing IP
+	// addresses requires writes to contents of the
+	// map (either creation of
+	// a new IP key or update of lastSeen on an
+	// existing one) we keep a write lock over
+	// the whole operation
+	rl.mutex.Lock()
+	ipl, exists := rl.ipLimiterMap[addrPort.Addr()]
+	if exists {
+		// Just update timestamp
+		ipl.lastSeen = time.Now()
+	} else {
+		// Create new limiter
+		ipl = &ipLimiter{
+			lastSeen: time.Now(),
+			limiter:  rate.NewLimiter(conf.Ratelimit.Rate, conf.Ratelimit.Burst),
+		}
+		rl.ipLimiterMap[addrPort.Addr()] = ipl
+	}
+	if !ipl.limiter.Allow() {
+		rl.mutex.Unlock()
+
+		err := fleetLockSendError("request_ratelimit", "you hit a ratelimit, try again later", http.StatusTooManyRequests, w)
+		if err != nil {
+			logger.Err(err).Msg("failed sending ratelimit FleetLock error to client")
+			return false
+		}
+		return false
+	}
+	// Important to release the lock before calling
+	// followup middleware
+	rl.mutex.Unlock()
+	return true
+}
+
 func ratelimitMiddleware(conf serverConfig, rl *rateLimiter) alice.Constructor {
 	return func(h http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -783,38 +819,10 @@ func ratelimitMiddleware(conf serverConfig, rl *rateLimiter) alice.Constructor {
 				return
 			}
 
-			// Because both nonexisting and existing IP
-			// addresses requires writes to contents of the
-			// map (either creation of
-			// a new IP key or update of lastSeen on an
-			// existing one) we keep a write lock over
-			// the whole operation
-			rl.mutex.Lock()
-			ipl, exists := rl.ipLimiterMap[addrPort.Addr()]
-			if exists {
-				// Just update timestamp
-				ipl.lastSeen = time.Now()
-			} else {
-				// Create new limiter
-				ipl = &ipLimiter{
-					lastSeen: time.Now(),
-					limiter:  rate.NewLimiter(conf.Ratelimit.Rate, conf.Ratelimit.Burst),
-				}
-				rl.ipLimiterMap[addrPort.Addr()] = ipl
-			}
-			if !ipl.limiter.Allow() {
-				rl.mutex.Unlock()
-
-				err := fleetLockSendError("request_ratelimit", "you hit a ratelimit, try again later", http.StatusTooManyRequests, w)
-				if err != nil {
-					logger.Err(err).Msg("failed sending ratelimit FleetLock error to client")
-					return
-				}
+			if !allowedByLimiter(logger, rl, addrPort, conf, w) {
 				return
 			}
-			// Important to release the lock before calling
-			// followup middleware
-			rl.mutex.Unlock()
+
 			h.ServeHTTP(w, r)
 		})
 	}
