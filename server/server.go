@@ -337,6 +337,30 @@ func fleetLockSendError(kind, value string, statusCode int, w http.ResponseWrite
 	return nil
 }
 
+func handlePreRebootLockError(logger *zerolog.Logger, err error, w http.ResponseWriter) {
+	logger.Err(err).Msg(failedGettingLockMsg)
+
+	// Set default error content and status
+	msg := failedGettingLockMsg
+	errStatus := http.StatusInternalServerError
+
+	// If specific type of error we trust that the
+	// string returned can be sent to the client
+	// as-is
+	if rlerr, ok := err.(*fleetlock.RecursiveLockError); ok {
+		msg = rlerr.Error()
+		if rlerr.AllSlotsTaken {
+			errStatus = http.StatusConflict
+		}
+	}
+
+	err = fleetLockSendError("failed_lock", msg, errStatus, w)
+	if err != nil {
+		logger.Err(err).Msg("failed sending RecursiveLock error")
+		return
+	}
+}
+
 // handler called when clients requests to take a lock
 func preRebootFunc(cc *configCache, timeout time.Duration) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -366,26 +390,7 @@ func preRebootFunc(cc *configCache, timeout time.Duration) http.HandlerFunc {
 
 		err := groupLocker.RecursiveLock(lockerCtx, fld.ClientParams.ID)
 		if err != nil {
-			logger.Err(err).Msg(failedGettingLockMsg)
-
-			// Set default error content and status
-			msg := failedGettingLockMsg
-			errStatus := http.StatusInternalServerError
-
-			// If specific type of error we trust that the
-			// string returned can be sent to the client
-			// as-is
-			if rlerr, ok := err.(*fleetlock.RecursiveLockError); ok {
-				msg = rlerr.Error()
-				if rlerr.AllSlotsTaken {
-					errStatus = http.StatusConflict
-				}
-			}
-
-			err = fleetLockSendError("failed_lock", msg, errStatus, w)
-			if err != nil {
-				logger.Err(err).Msg("failed sending RecursiveLock error")
-			}
+			handlePreRebootLockError(logger, err, w)
 			return
 		}
 
