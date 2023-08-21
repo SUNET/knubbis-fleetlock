@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sort"
 	"time"
 
@@ -12,7 +13,6 @@ import (
 	"github.com/rs/zerolog"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
-	"golang.org/x/exp/slices"
 )
 
 const groupPrefix = "se.sunet.knubbis/fleetlock/groups"
