@@ -1,4 +1,4 @@
-FROM golang:1.20.5-bullseye AS build
+FROM golang:1.21.0-bookworm AS build
 
 ARG VERSION
 
