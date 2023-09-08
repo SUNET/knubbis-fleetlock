@@ -87,13 +87,14 @@ The Swagger UI can help you add and delete groups and is accessible by
 browsing `/swagger` on the running server.
 
 ## Development
-### Formatting and linting
+### Formatting, linting and testing
 When working with this code at least the following tools are expected to be
 run at the top level directory prior to commiting:
 * `go fmt ./...`
 * `go vet ./...`
 * `staticcheck ./...` (see [staticcheck](https://staticcheck.io))
 * `gosec ./...` (see [gosec](https://github.com/securego/gosec))
+* `go test ./...`
 
 If you have modified the Swagger comments you need to regenerate the
 relevant files:
