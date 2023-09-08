@@ -1,4 +1,4 @@
-FROM golang:1.21.0-bookworm AS build
+FROM golang:1.21.1-bookworm AS build
 
 ARG VERSION
 
