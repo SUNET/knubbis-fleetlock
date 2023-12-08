@@ -4,7 +4,7 @@ go 1.21.1
 
 require (
 	github.com/BurntSushi/toml v1.3.2
-	github.com/caddyserver/certmagic v0.19.2
+	github.com/caddyserver/certmagic v0.20.0
 	github.com/hashicorp/golang-lru v1.0.2
 	github.com/julienschmidt/httprouter v1.3.0
 	github.com/justinas/alice v1.2.0
@@ -14,8 +14,8 @@ require (
 	github.com/spf13/cobra v1.8.0
 	github.com/swaggo/http-swagger v1.3.4
 	github.com/swaggo/swag v1.16.2
-	go.etcd.io/etcd/api/v3 v3.5.10
-	go.etcd.io/etcd/client/v3 v3.5.10
+	go.etcd.io/etcd/api/v3 v3.5.11
+	go.etcd.io/etcd/client/v3 v3.5.11
 	golang.org/x/crypto v0.16.0
 	golang.org/x/time v0.5.0
 )
@@ -49,7 +49,7 @@ require (
 	github.com/spf13/pflag v1.0.5 // indirect
 	github.com/swaggo/files v1.0.1 // indirect
 	github.com/zeebo/blake3 v0.2.3 // indirect
-	go.etcd.io/etcd/client/pkg/v3 v3.5.10 // indirect
+	go.etcd.io/etcd/client/pkg/v3 v3.5.11 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.26.0 // indirect
 	golang.org/x/mod v0.14.0 // indirect
