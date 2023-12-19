@@ -16,7 +16,7 @@ require (
 	github.com/swaggo/swag v1.16.2
 	go.etcd.io/etcd/api/v3 v3.5.11
 	go.etcd.io/etcd/client/v3 v3.5.11
-	golang.org/x/crypto v0.16.0
+	golang.org/x/crypto v0.17.0
 	golang.org/x/time v0.5.0
 )
 
