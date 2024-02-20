@@ -752,6 +752,18 @@ func staleLocksFunc(cc *configCache, timeout time.Duration) http.HandlerFunc {
 	}
 }
 
+func methodNotAllowedFunc() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+	}
+}
+
+func notFoundFunc() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}
+}
+
 func writeNewlineJSON(w http.ResponseWriter, b []byte, statusCode int) error {
 	w.Header().Set("content-type", contentTypeString)
 	w.WriteHeader(statusCode)
@@ -1597,6 +1609,9 @@ func Run(configPath string) {
 	// Create middleware chain used for swagger docs endpoint
 	swaggerMiddlewares := newSwaggerMiddlewareChain(hlogMiddlewares)
 
+	// Create middleware chain used for unhandled requests
+	unhandledMiddlewares := newUnhandledChain(hlogMiddlewares)
+
 	preRebootChain := alice.New(fleetLockMiddlewares...).Then(preRebootFunc(cc, timeout))
 	steadyStateChain := alice.New(fleetLockMiddlewares...).Then(steadyStateFunc(cc, timeout))
 
@@ -1617,7 +1632,10 @@ func Run(configPath string) {
 
 	swaggerChain := alice.New(swaggerMiddlewares...).Then(httpSwagger.Handler(httpSwagger.URL(swaggerURL.String())))
 
-	router := newRouter(preRebootChain, steadyStateChain, lockStatusChain, staleLocksChain, apiChain, swaggerChain)
+	methodNotAllowedChain := alice.New(unhandledMiddlewares...).Then(methodNotAllowedFunc())
+	notFoundChain := alice.New(unhandledMiddlewares...).Then(notFoundFunc())
+
+	router := newRouter(methodNotAllowedChain, notFoundChain, preRebootChain, steadyStateChain, lockStatusChain, staleLocksChain, apiChain, swaggerChain)
 
 	srv := &http.Server{
 		Addr:         conf.Server.Listen,
@@ -1723,6 +1741,13 @@ func newSwaggerMiddlewareChain(hlogMiddlewares []alice.Constructor) []alice.Cons
 	return swaggerMiddlewares
 }
 
+func newUnhandledChain(hlogMiddlewares []alice.Constructor) []alice.Constructor {
+	unhandledMiddlewares := []alice.Constructor{}
+	unhandledMiddlewares = append(unhandledMiddlewares, hlogMiddlewares...)
+
+	return unhandledMiddlewares
+}
+
 func newEtcd3Client(conf etcd3config, tlsConfig *tls.Config) (*clientv3.Client, error) {
 	etcd3Config := clientv3.Config{
 		Endpoints:   conf.Endpoints,
@@ -1753,8 +1778,10 @@ func newEtcd3Client(conf etcd3config, tlsConfig *tls.Config) (*clientv3.Client, 
 	return etcd3Client, nil
 }
 
-func newRouter(preRebootChain, steadyStateChain, lockStatusChain, staleLocksChain, apiChain http.Handler, swaggerChain http.Handler) *httprouter.Router {
+func newRouter(methodNotAllowedChain, notFoundChain, preRebootChain, steadyStateChain, lockStatusChain, staleLocksChain, apiChain http.Handler, swaggerChain http.Handler) *httprouter.Router {
 	router := httprouter.New()
+	router.MethodNotAllowed = methodNotAllowedChain
+	router.NotFound = notFoundChain
 
 	router.Handler("POST", "/v1/pre-reboot", preRebootChain)
 	router.Handler("POST", "/v1/steady-state", steadyStateChain)
