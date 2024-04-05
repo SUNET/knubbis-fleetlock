@@ -1,6 +1,6 @@
 module github.com/SUNET/knubbis-fleetlock
 
-go 1.22.0
+go 1.22.2
 
 require (
 	github.com/BurntSushi/toml v1.3.2
