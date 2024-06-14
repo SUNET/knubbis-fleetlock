@@ -1429,7 +1429,9 @@ func setupACME(logger zerolog.Logger, conf serverConfig, service string) *tls.Co
 
 	// Enable DNS challenge
 	certmagic.DefaultACME.DNS01Solver = &certmagic.DNS01Solver{
-		DNSProvider: acmednsProvider,
+		DNSManager: certmagic.DNSManager{
+			DNSProvider: acmednsProvider,
+		},
 	}
 
 	if !conf.CertMagic.LetsEncryptProd {
