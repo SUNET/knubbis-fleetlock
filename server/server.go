@@ -656,7 +656,7 @@ func apiHandleDelete(logger *zerolog.Logger, timeout time.Duration, flConfiger f
 		logger.Err(err).Msg(message)
 		err := apiSendError(w, message, http.StatusInternalServerError)
 		if err != nil {
-			logger.Err(err).Msgf("unable to send group add error response")
+			logger.Err(err).Msg("unable to send group add error response")
 		}
 		return false
 	}
