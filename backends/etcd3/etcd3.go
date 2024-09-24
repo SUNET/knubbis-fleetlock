@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/SUNET/knubbis-fleetlock/fleetlock"
@@ -106,8 +107,15 @@ func (eb *Etcd3Backend) RecursiveLock(ctx context.Context, id string) error {
 		}
 
 		if len(sData.Holders) >= sData.TotalSlots {
+			holderIDs := []string{}
+			for _, holder := range sData.Holders {
+				holderIDs = append(holderIDs, holder.ID)
+			}
+			slices.Sort(holderIDs)
+			holderIDsString := strings.Join(holderIDs, ",")
+
 			return &fleetlock.RecursiveLockError{
-				ClientMsg:     fmt.Sprintf("all %d slots are currently taken", sData.TotalSlots),
+				ClientMsg:     fmt.Sprintf("all %d slots are currently taken: [%s]", sData.TotalSlots, holderIDsString),
 				AllSlotsTaken: true,
 			}
 		}
