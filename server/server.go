@@ -626,7 +626,7 @@ func apiHandlePost(logger *zerolog.Logger, timeout time.Duration, flConfiger fle
 	err = addGroup(ctx, flConfiger, agd)
 	if err != nil {
 		message := fmt.Sprintf("unable to add group '%s'", agd.Name)
-		logger.Err(err).Msgf(message)
+		logger.Err(err).Msg(message)
 		err := apiSendError(w, message, http.StatusBadRequest)
 		if err != nil {
 			logger.Err(err).Msgf("unable to send group add error")
@@ -653,7 +653,7 @@ func apiHandleDelete(logger *zerolog.Logger, timeout time.Duration, flConfiger f
 	err := delGroup(ctx, flConfiger, group)
 	if err != nil {
 		message := fmt.Sprintf("unable to delete group '%s'", group)
-		logger.Err(err).Msgf(message)
+		logger.Err(err).Msg(message)
 		err := apiSendError(w, message, http.StatusInternalServerError)
 		if err != nil {
 			logger.Err(err).Msgf("unable to send group add error response")
