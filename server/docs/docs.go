@@ -153,7 +153,12 @@ const docTemplate = `{
         "BasicAuth": {
             "type": "basic"
         }
-    }
+    },
+    "security": [
+        {
+            "BasicAuth": []
+        }
+    ]
 }`
 
 // SwaggerInfo holds exported Swagger Info so clients can modify it

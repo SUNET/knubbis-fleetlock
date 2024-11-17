@@ -61,6 +61,7 @@ import (
 //	@host						localhost:8443
 //	@BasePath					/api/v1
 //	@securityDefinitions.basic	BasicAuth
+//	@Security					BasicAuth
 
 // version set at build time with -ldflags="-X github.com/SUNET/knubbis-fleetlock/server.version=v0.0.1"
 var version = "unspecified"

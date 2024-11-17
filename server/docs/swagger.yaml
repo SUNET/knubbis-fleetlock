@@ -95,6 +95,8 @@ paths:
       summary: Delete a group
       tags:
       - groups
+security:
+- BasicAuth: []
 securityDefinitions:
   BasicAuth:
     type: basic
