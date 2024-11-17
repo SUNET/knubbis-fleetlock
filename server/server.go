@@ -50,17 +50,17 @@ import (
 
 // annotations for generating swagger docs:
 //
-// @title                     Swagger Knubbis FleetLock API
-// @version                   0.0.1
-// @description               This API is used for managing FleetLock groups.
-// @contact.name              Patrik Lundin
-// @contact.url               https://www.sunet.se
-// @contact.email             patlu@sunet.se
-// @license.name              BSD 2-Clause
-// @license.url               https://github.com/SUNET/knubbis-fleetlock/blob/main/LICENSE
-// @host                      localhost:8443
-// @BasePath                  /api/v1
-// @securityDefinitions.basic BasicAuth
+//	@title						Swagger Knubbis FleetLock API
+//	@version					0.0.1
+//	@description				This API is used for managing FleetLock groups.
+//	@contact.name				Patrik Lundin
+//	@contact.url				https://www.sunet.se
+//	@contact.email				patlu@sunet.se
+//	@license.name				BSD 2-Clause
+//	@license.url				https://github.com/SUNET/knubbis-fleetlock/blob/main/LICENSE
+//	@host						localhost:8443
+//	@BasePath					/api/v1
+//	@securityDefinitions.basic	BasicAuth
 
 // version set at build time with -ldflags="-X github.com/SUNET/knubbis-fleetlock/server.version=v0.0.1"
 var version = "unspecified"
@@ -513,12 +513,12 @@ type addGroupModel struct {
 
 // Annotations for generating swagger docs:
 //
-// @Summary     Get groups
-// @Description Get the current available groups
-// @Tags        groups
-// @Success     200
-// @Failure     400 {object} apiError
-// @Router      /groups [get]
+//	@Summary		Get groups
+//	@Description	Get the current available groups
+//	@Tags			groups
+//	@Success		200
+//	@Failure		400	{object}	apiError
+//	@Router			/groups [get]
 func getGroups(ctx context.Context, timeout time.Duration, cc *configCache, logger *zerolog.Logger) (lockStatusData, error) {
 	lsd, err := getLockStatus(ctx, timeout, cc, logger)
 	if err != nil {
@@ -529,14 +529,14 @@ func getGroups(ctx context.Context, timeout time.Duration, cc *configCache, logg
 
 // Annotations for generating swagger docs:
 //
-// @Summary     Add a group
-// @Description Add a new FleetLock group
-// @Tags        groups
-// @Accept      json
-// @Param       group body addGroupModel true "Add group"
-// @Success     200
-// @Failure     400 {object} apiError
-// @Router      /groups [post]
+//	@Summary		Add a group
+//	@Description	Add a new FleetLock group
+//	@Tags			groups
+//	@Accept			json
+//	@Param			group	body	addGroupModel	true	"Add group"
+//	@Success		200
+//	@Failure		400	{object}	apiError
+//	@Router			/groups [post]
 func addGroup(ctx context.Context, flConfiger fleetlock.FleetLockConfiger, agd addGroupModel) error {
 	err := flConfiger.AddGroup(ctx, agd.Name, agd.TotalSlots, agd.StaleAge, agd.Permissions)
 	if err != nil {
@@ -548,14 +548,14 @@ func addGroup(ctx context.Context, flConfiger fleetlock.FleetLockConfiger, agd a
 
 // Annotations for generating swagger docs:
 //
-// @Summary     Delete a group
-// @Description Delete a FleetLock group
-// @Tags        groups
-// @Accept      json
-// @Param       group path string true "Group name"
-// @Success     200
-// @Failure     404 {object} apiError
-// @Router      /groups/{group} [delete]
+//	@Summary		Delete a group
+//	@Description	Delete a FleetLock group
+//	@Tags			groups
+//	@Accept			json
+//	@Param			group	path	string	true	"Group name"
+//	@Success		200
+//	@Failure		404	{object}	apiError
+//	@Router			/groups/{group} [delete]
 func delGroup(ctx context.Context, flConfiger fleetlock.FleetLockConfiger, group string) error {
 	err := flConfiger.DelGroup(ctx, group)
 	if err != nil {
