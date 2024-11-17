@@ -82,7 +82,6 @@ func (s *Etcd3Storage) basePrefix(key string) string {
 // Exists returns true if the key exists
 // and there was no error checking.
 func (s *Etcd3Storage) Exists(ctx context.Context, key string) bool {
-
 	keyPath := s.basePrefix(key)
 
 	s.logger.Debug().Msgf("Exists(): keyPath: %s", keyPath)
@@ -105,7 +104,6 @@ func (s *Etcd3Storage) Exists(ctx context.Context, key string) bool {
 //
 // Store puts value at key.
 func (s *Etcd3Storage) Store(ctx context.Context, key string, value []byte) error {
-
 	keyPath := s.basePrefix(key)
 
 	s.logger.Debug().Msgf("Store(): keyPath: %s", keyPath)
@@ -160,7 +158,6 @@ func (s *Etcd3Storage) Store(ctx context.Context, key string, value []byte) erro
 //
 // Load retrieves the value at key.
 func (s *Etcd3Storage) Load(ctx context.Context, key string) ([]byte, error) {
-
 	keyPath := s.basePrefix(key)
 
 	s.logger.Debug().Msgf("Load(): keyPath: %s", keyPath)
@@ -227,7 +224,6 @@ func (s *Etcd3Storage) decryptStorageData(keyPath string, encryptedMsg []byte) (
 // returned only if the key still exists
 // when the method returns.
 func (s *Etcd3Storage) Delete(ctx context.Context, key string) error {
-
 	keyPath := s.basePrefix(key)
 
 	s.logger.Debug().Msgf("Delete(): keyPath: %s", keyPath)
@@ -377,7 +373,6 @@ func (s *Etcd3Storage) Stat(ctx context.Context, key string) (certmagic.KeyInfo,
 		Size:       0,           // "Size" is optional, and like for "Modified" it is unclear what the size of this made up "directory" should be
 		IsTerminal: false,       // There were results found under the prefix "key/" so treat this like a "directory"
 	}, nil
-
 }
 
 // From https://github.com/caddyserver/certmagic/blob/master/storage.go:

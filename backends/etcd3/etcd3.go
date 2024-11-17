@@ -16,8 +16,10 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
-const groupPrefix = "se.sunet.knubbis/fleetlock/groups"
-const groupSuffix = "v1/semaphore"
+const (
+	groupPrefix = "se.sunet.knubbis/fleetlock/groups"
+	groupSuffix = "v1/semaphore"
+)
 
 func groupSemaphorePath(group string) string {
 	return fmt.Sprintf("%s/%s/%s", groupPrefix, group, groupSuffix)
@@ -45,7 +47,6 @@ type Etcd3Config struct {
 }
 
 func newLocker(client *clientv3.Client, group string, totalSlots int, staleAge fleetlock.Duration) (*Etcd3Backend, error) {
-
 	if !fleetlock.ValidGroup.MatchString(group) {
 		return nil, fmt.Errorf("group name '%s' is not valid", group)
 	}
@@ -326,7 +327,6 @@ func (ec *Etcd3Config) atomicConfigWrite(ctx context.Context, logger *zerolog.Lo
 		default:
 			return fmt.Errorf("found unexpected op type '%T'", op)
 		}
-
 	}
 	return nil
 }
@@ -384,7 +384,6 @@ func (ec *Etcd3Config) GetLockers(ctx context.Context) (map[string]fleetlock.Fle
 }
 
 func (ec *Etcd3Config) AddGroup(ctx context.Context, group string, totalSlots int, staleAge fleetlock.Duration, permissions map[string]string) error {
-
 	if !fleetlock.ValidGroup.MatchString(group) {
 		return fmt.Errorf("AddGroup: group name '%s' is not valid", group)
 	}
@@ -517,6 +516,5 @@ func (ec *Etcd3Config) GetNotifierChan(ctx context.Context) (interface{}, error)
 }
 
 func (ec *Etcd3Config) Key() string {
-
 	return ec.key
 }

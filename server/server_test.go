@@ -386,7 +386,7 @@ func TestFleetLockHandlers(t *testing.T) {
 		goldenFn := test.name + ".golden"
 		golden := filepath.Join("test-fixtures", goldenFn)
 		if *update {
-			err := os.WriteFile(golden, body, 0644)
+			err := os.WriteFile(golden, body, 0o644)
 			if err != nil {
 				t.Fatalf("unable to write golden file: '%s'", err)
 			}

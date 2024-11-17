@@ -30,7 +30,6 @@ func NewArgonSettings(argonTime uint32, argonMemory uint32, argonThreads uint8, 
 }
 
 func NewArgonDefaultSettings() ArgonSettings {
-
 	argonSettings := ArgonSettings{}
 	// https://datatracker.ietf.org/doc/rfc9106/
 	// ===
@@ -55,7 +54,7 @@ func NewArgonDefaultSettings() ArgonSettings {
 	argonSettings.ArgonTime = uint32(3)
 
 	// p=4 lanes
-	//const ArgonThreads = uint8(4)
+	// const ArgonThreads = uint8(4)
 	argonSettings.ArgonThreads = uint8(4)
 
 	// m=2^(16) (64 MiB of RAM)

@@ -84,7 +84,6 @@ type configCache struct {
 }
 
 func newConfigCache(ctx context.Context, flConfiger fleetlock.FleetLockConfiger) (*configCache, error) {
-
 	flc, err := flConfiger.GetLockers(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("newConfigCache: unable to get lockers: %w", err)
@@ -105,7 +104,6 @@ func newConfigCache(ctx context.Context, flConfiger fleetlock.FleetLockConfiger)
 // runs in a go routine in the background and updates the configCache struct
 // if something changes
 func configCacheUpdater(cc *configCache, flConfiger fleetlock.FleetLockConfiger, logger zerolog.Logger, loginCache *lru.Cache) {
-
 	chanInterface, err := flConfiger.GetNotifierChan(context.Background())
 	if err != nil {
 		logger.Err(err).Msg("unable to get notifier, not starting cache updater")
@@ -127,7 +125,6 @@ func configCacheUpdater(cc *configCache, flConfiger fleetlock.FleetLockConfiger,
 			logger.Error().Msg("unsupported notifier type, not starting cache updated")
 			return
 		}
-
 	}
 }
 
@@ -477,7 +474,6 @@ func lockStatusFunc(cc *configCache, timeout time.Duration) http.HandlerFunc {
 		logger := hlog.FromRequest(r)
 
 		lsd, err := getLockStatus(r.Context(), timeout, cc, logger)
-
 		if err != nil {
 			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 			return
@@ -524,7 +520,6 @@ type addGroupModel struct {
 // @Failure     400 {object} apiError
 // @Router      /groups [get]
 func getGroups(ctx context.Context, timeout time.Duration, cc *configCache, logger *zerolog.Logger) (lockStatusData, error) {
-
 	lsd, err := getLockStatus(ctx, timeout, cc, logger)
 	if err != nil {
 		return lockStatusData{}, err
@@ -543,7 +538,6 @@ func getGroups(ctx context.Context, timeout time.Duration, cc *configCache, logg
 // @Failure     400 {object} apiError
 // @Router      /groups [post]
 func addGroup(ctx context.Context, flConfiger fleetlock.FleetLockConfiger, agd addGroupModel) error {
-
 	err := flConfiger.AddGroup(ctx, agd.Name, agd.TotalSlots, agd.StaleAge, agd.Permissions)
 	if err != nil {
 		return fmt.Errorf("addGroup: %w", err)
@@ -563,7 +557,6 @@ func addGroup(ctx context.Context, flConfiger fleetlock.FleetLockConfiger, agd a
 // @Failure     404 {object} apiError
 // @Router      /groups/{group} [delete]
 func delGroup(ctx context.Context, flConfiger fleetlock.FleetLockConfiger, group string) error {
-
 	err := flConfiger.DelGroup(ctx, group)
 	if err != nil {
 		return fmt.Errorf("delGroup: %w", err)
@@ -662,14 +655,12 @@ func apiHandleDelete(logger *zerolog.Logger, timeout time.Duration, flConfiger f
 	}
 
 	return true
-
 }
 
 // apiFunc is the gateway to calling other API functions, this way we do
 // not need to create one middleware chain per request type.
 func apiFunc(cc *configCache, timeout time.Duration, flConfiger fleetlock.FleetLockConfiger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-
 		logger := hlog.FromRequest(r)
 
 		switch r.Method {
@@ -1032,7 +1023,6 @@ func monitorBasicAuthMiddleware(username, password string) alice.Constructor {
 }
 
 func sendUnauthorizedResponse(logger *zerolog.Logger, w http.ResponseWriter, realm string, flEndpoint bool) {
-
 	w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Basic realm="%s", charset="utf-8"`, realm))
 
 	// Return FleetLock formatted JSON if this authentication error
@@ -1304,7 +1294,6 @@ func defaultServerConfig() serverConfig {
 }
 
 func newConfig(configFile string) (serverConfig, error) {
-
 	conf := serverConfig{}
 	if _, err := toml.DecodeFile(configFile, &conf); err != nil {
 		return serverConfig{}, fmt.Errorf("newConfig: %w", err)
@@ -1317,7 +1306,6 @@ func newConfig(configFile string) (serverConfig, error) {
 // => "[]byte(sha256(password))" for easier lookup, and also hash the
 // password for later constant time comparision
 func getFlattenedPerms(ctx context.Context, flc fleetlock.FleetLockConfiger) (map[string]hashing.HashedPassword, error) {
-
 	flConfig, err := flc.GetConfig(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("unable to initialize FleetLock config")
@@ -1409,7 +1397,6 @@ func getEncryptionKey(logger zerolog.Logger, conf serverConfig) []byte {
 }
 
 func setupACME(logger zerolog.Logger, conf serverConfig, service string) *tls.Config {
-
 	// We only expect to use the DNS challenge as this service is
 	// not exposed to the internet.
 	certmagic.DefaultACME.DisableTLSALPNChallenge = true

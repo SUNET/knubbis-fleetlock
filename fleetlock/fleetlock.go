@@ -132,7 +132,6 @@ type FleetLockConfiger interface {
 }
 
 func NewHashedConfig(flc FleetLockConfig, argonSettings hashing.ArgonSettings) (FleetLockHashedConfig, error) {
-
 	flhc := map[string]HashedGroupSettings{}
 
 	for group, settings := range flc {
