@@ -95,7 +95,7 @@ run at the top level directory prior to commiting:
 * `staticcheck ./...` (see [staticcheck](https://staticcheck.io))
 * `gosec ./...` (see [gosec](https://github.com/securego/gosec))
 * `golangci-lint run` (see [golangci-lint](https://golangci-lint.run))
-* `go test ./...`
+* `go test -race ./...`
 
 If you have modified the Swagger comments you need to regenerate the
 relevant files:
