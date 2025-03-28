@@ -880,6 +880,8 @@ func getCachedKeys(logger *zerolog.Logger, loginCache *lru.Cache, keys []string,
 		if _, ok = loginCache.Get(hashedCacheKey); ok {
 			logger.Info().Msgf("login cache hit for key '%s'", key)
 			validLogin = true
+		} else {
+			logger.Info().Msgf("login cache miss for key '%s'", key)
 		}
 	}
 
@@ -897,7 +899,7 @@ func keyHashComparision(logger *zerolog.Logger, foundKeys []string, flattenedPer
 			continue
 		}
 
-		logger.Info().Msgf("login cache miss for key '%s'", key)
+		logger.Info().Msgf("calculating hash for '%s'", key)
 
 		argonSettings := hashing.NewArgonSettings(
 			expectedPasswordHash.ArgonTime,
@@ -936,7 +938,7 @@ func keyHashComparision(logger *zerolog.Logger, foundKeys []string, flattenedPer
 	return validLogin
 }
 
-func flBasicAuthMiddleware(cc *configCache, loginCache *lru.Cache) alice.Constructor {
+func flBasicAuthMiddleware(cc *configCache, loginCache *lru.Cache, argon2Mutex *sync.Mutex) alice.Constructor {
 	return func(h http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			logger := hlog.FromRequest(r)
@@ -974,7 +976,19 @@ func flBasicAuthMiddleware(cc *configCache, loginCache *lru.Cache) alice.Constru
 			// If successful login was not found in cache, but we
 			// did find a matching key, do hash comparision:
 			if !validLogin && len(foundKeys) > 0 {
-				validLogin = keyHashComparision(logger, foundKeys, flattenedPerms, loginCache, password)
+				// Protect concurrent access to memory intensive argon2
+				// operation to be less susceptible to OOM
+				// conditions if many requests are coming in at
+				// the same time.
+				argon2Mutex.Lock()
+				// Do a second check in the cache in case
+				// another request has updated it while
+				// we were waiting on the lock.
+				validLogin, foundKeys = getCachedKeys(logger, loginCache, keys, flattenedPerms, password)
+				if !validLogin && len(foundKeys) > 0 {
+					validLogin = keyHashComparision(logger, foundKeys, flattenedPerms, loginCache, password)
+				}
+				argon2Mutex.Unlock()
 			}
 
 			if validLogin {
@@ -1588,7 +1602,8 @@ func Run(configPath string) {
 	ratelimitingMiddleware := ratelimitMiddleware(conf, limiter)
 
 	// Create middleware chain used for the FleetLock endpoints.
-	fleetLockMiddlewares := newFleetLockMiddlewareChain(hlogMiddlewares, ratelimitingMiddleware, cc, loginCache)
+	var argon2Mutex sync.Mutex
+	fleetLockMiddlewares := newFleetLockMiddlewareChain(hlogMiddlewares, ratelimitingMiddleware, cc, loginCache, &argon2Mutex)
 
 	// Create middleware chain used for monitoring endpoints
 	monitoringMiddlewares := newMonitoringMiddlewareChain(hlogMiddlewares, ratelimitingMiddleware, conf.Monitoring)
@@ -1695,13 +1710,13 @@ func newHlogMiddlewareChain(logger zerolog.Logger) []alice.Constructor {
 	return hlogMiddlewares
 }
 
-func newFleetLockMiddlewareChain(hlogMiddlewares []alice.Constructor, ratelimitingMiddleware alice.Constructor, cc *configCache, loginCache *lru.Cache) []alice.Constructor {
+func newFleetLockMiddlewareChain(hlogMiddlewares []alice.Constructor, ratelimitingMiddleware alice.Constructor, cc *configCache, loginCache *lru.Cache, argon2Mutex *sync.Mutex) []alice.Constructor {
 	// Create middleware chain used for the FleetLock endpoints.
 	fleetLockMiddlewares := []alice.Constructor{}
 	fleetLockMiddlewares = append(fleetLockMiddlewares, hlogMiddlewares...)
 	fleetLockMiddlewares = append(fleetLockMiddlewares, ratelimitingMiddleware)
 	fleetLockMiddlewares = append(fleetLockMiddlewares, fleetLockValidatorMiddleware())
-	fleetLockMiddlewares = append(fleetLockMiddlewares, flBasicAuthMiddleware(cc, loginCache))
+	fleetLockMiddlewares = append(fleetLockMiddlewares, flBasicAuthMiddleware(cc, loginCache, argon2Mutex))
 
 	return fleetLockMiddlewares
 }

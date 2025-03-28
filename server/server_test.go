@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -344,7 +345,8 @@ func TestFleetLockHandlers(t *testing.T) {
 		}
 
 		// Create middleware chain used for the FleetLock endpoints.
-		fleetLockMiddlewares := newFleetLockMiddlewareChain(hlogMiddlewares, ratelimitingMiddleware, cc, loginCache)
+		var argon2Mutex sync.Mutex
+		fleetLockMiddlewares := newFleetLockMiddlewareChain(hlogMiddlewares, ratelimitingMiddleware, cc, loginCache, &argon2Mutex)
 		timeout := time.Second * 3
 
 		preRebootChain := alice.New(fleetLockMiddlewares...).Then(preRebootFunc(cc, timeout))
