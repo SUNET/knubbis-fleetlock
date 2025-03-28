@@ -38,6 +38,10 @@ subdomain = "eeeeeeee-dddd-cccc-bbbb-aaaaaaaaaaaa"
 full_domain = "eeeeeeee-dddd-cccc-bbbb-aaaaaaaaaaaa.acme-dns.example.com"
 server_url = "https://acme-dns.example.com"
 
+[pprof]
+read_timeout = "10s"
+write_timeout = "31s"
+
 [prometheus]
 listen = "127.0.0.1:2222"
 read_timeout = "10s"

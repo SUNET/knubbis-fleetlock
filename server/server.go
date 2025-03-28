@@ -14,6 +14,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	_ "net/http/pprof" // #nosec G108 -- pprofServer is only bound to 127.0.0.1:6060
 	"net/netip"
 	"net/url"
 	"os"
@@ -227,6 +228,7 @@ func (d *duration) UnmarshalText(text []byte) error {
 type serverConfig struct {
 	Server     serverSettings
 	Ratelimit  ratelimitSettings
+	Pprof      pprofSettings
 	Prometheus prometheusSettings
 	Etcd3      etcd3config
 	CertMagic  certMagicConfig
@@ -247,6 +249,11 @@ type serverSettings struct {
 type ratelimitSettings struct {
 	Rate  rate.Limit
 	Burst int
+}
+
+type pprofSettings struct {
+	ReadTimeout  duration `toml:"read_timeout"`
+	WriteTimeout duration `toml:"write_timeout"`
 }
 
 type prometheusSettings struct {
@@ -1272,6 +1279,14 @@ func defaultServerConfig() serverConfig {
 			Username: "monitor",
 			Password: "changeme",
 		},
+		Pprof: pprofSettings{
+			ReadTimeout: duration{
+				Duration: time.Duration(10 * time.Second),
+			},
+			WriteTimeout: duration{
+				Duration: time.Duration(31 * time.Second),
+			},
+		},
 		Prometheus: prometheusSettings{
 			Listen: "127.0.0.1:2222",
 			ReadTimeout: duration{
@@ -1655,6 +1670,18 @@ func Run(configPath string) {
 	idleConnsClosed := make(chan struct{})
 
 	startGracefulShutdowner(logger, conf, srv, idleConnsClosed)
+
+	pprofServer := &http.Server{
+		Addr:         "127.0.0.1:6060",
+		ReadTimeout:  conf.Pprof.ReadTimeout.Duration,
+		WriteTimeout: conf.Pprof.WriteTimeout.Duration,
+	}
+
+	go func() {
+		logger.Fatal().
+			Err(pprofServer.ListenAndServe()).
+			Str("pprof listener", service).Msgf("cannot start %s", service)
+	}()
 
 	promMux := http.NewServeMux()
 
