@@ -16,7 +16,7 @@ import (
 
 	"github.com/SUNET/knubbis-fleetlock/fleetlock"
 	"github.com/SUNET/knubbis-fleetlock/hashing"
-	lru "github.com/hashicorp/golang-lru"
+	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/justinas/alice"
 	"golang.org/x/time/rate"
 	//"go.etcd.io/etcd/client/v3/mock/mockserver"
@@ -339,7 +339,7 @@ func TestFleetLockHandlers(t *testing.T) {
 			logger.Fatal().Err(err).Msg("unable to initialize config cache")
 		}
 
-		loginCache, err := lru.New(128)
+		loginCache, err := lru.New[string, bool](128)
 		if err != nil {
 			logger.Fatal().Err(err).Msg("unable to initialize login LRU cache")
 		}
