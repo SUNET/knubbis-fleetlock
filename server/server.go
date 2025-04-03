@@ -105,7 +105,7 @@ func newConfigCache(ctx context.Context, flConfiger fleetlock.FleetLockConfiger)
 
 // runs in a go routine in the background and updates the configCache struct
 // if something changes
-func configCacheUpdater(cc *configCache, flConfiger fleetlock.FleetLockConfiger, logger zerolog.Logger, loginCache *lru.Cache[string, bool]) {
+func configCacheUpdater(cc *configCache, flConfiger fleetlock.FleetLockConfiger, logger zerolog.Logger, loginCache *lru.Cache[string, struct{}]) {
 	chanInterface, err := flConfiger.GetNotifierChan(context.Background())
 	if err != nil {
 		logger.Err(err).Msg("unable to get notifier, not starting cache updater")
@@ -130,7 +130,7 @@ func configCacheUpdater(cc *configCache, flConfiger fleetlock.FleetLockConfiger,
 	}
 }
 
-func updateConfigCache(cc *configCache, logger zerolog.Logger, flConfiger fleetlock.FleetLockConfiger, loginCache *lru.Cache[string, bool]) error {
+func updateConfigCache(cc *configCache, logger zerolog.Logger, flConfiger fleetlock.FleetLockConfiger, loginCache *lru.Cache[string, struct{}]) error {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
 	defer cancel()
 	flc, err := flConfiger.GetLockers(ctx)
@@ -867,7 +867,7 @@ func createLoginCacheKey(key string, expectedPasswordHash hashing.HashedPassword
 	return hashedCacheKey
 }
 
-func getCachedKeys(logger *zerolog.Logger, loginCache *lru.Cache[string, bool], keys []string, flattenedPerms map[string]hashing.HashedPassword, password string) (bool, []string) {
+func getCachedKeys(logger *zerolog.Logger, loginCache *lru.Cache[string, struct{}], keys []string, flattenedPerms map[string]hashing.HashedPassword, password string) (bool, []string) {
 	validLogin := false
 
 	foundKeys := []string{}
@@ -895,7 +895,7 @@ func getCachedKeys(logger *zerolog.Logger, loginCache *lru.Cache[string, bool], 
 	return validLogin, foundKeys
 }
 
-func keyHashComparision(logger *zerolog.Logger, foundKeys []string, flattenedPerms map[string]hashing.HashedPassword, loginCache *lru.Cache[string, bool], password string) bool {
+func keyHashComparision(logger *zerolog.Logger, foundKeys []string, flattenedPerms map[string]hashing.HashedPassword, loginCache *lru.Cache[string, struct{}], password string) bool {
 	validLogin := false
 	for _, key := range foundKeys {
 		expectedPasswordHash, ok := flattenedPerms[key]
@@ -933,7 +933,7 @@ func keyHashComparision(logger *zerolog.Logger, foundKeys []string, flattenedPer
 		if passwordMatch {
 			validLogin = true
 			hashedCacheKey := createLoginCacheKey(key, expectedPasswordHash, password)
-			evicted := loginCache.Add(hashedCacheKey, true)
+			evicted := loginCache.Add(hashedCacheKey, struct{}{})
 			if evicted {
 				logger.Info().Msg("adding key to loginCache resulted in eviction")
 			}
@@ -945,7 +945,7 @@ func keyHashComparision(logger *zerolog.Logger, foundKeys []string, flattenedPer
 	return validLogin
 }
 
-func flBasicAuthMiddleware(cc *configCache, loginCache *lru.Cache[string, bool], argon2Mutex *sync.Mutex) alice.Constructor {
+func flBasicAuthMiddleware(cc *configCache, loginCache *lru.Cache[string, struct{}], argon2Mutex *sync.Mutex) alice.Constructor {
 	return func(h http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			logger := hlog.FromRequest(r)
@@ -1593,7 +1593,7 @@ func Run(configPath string) {
 	// FleetLock endpoints. Without this we need to compute
 	// expensive argon2 hashes for each request taking or releasing
 	// a lock.
-	loginCache, err := lru.New[string, bool](128)
+	loginCache, err := lru.New[string, struct{}](128)
 	if err != nil {
 		logger.Fatal().Err(err).Msg("unable to initialize password LRU cache")
 	}
@@ -1737,7 +1737,7 @@ func newHlogMiddlewareChain(logger zerolog.Logger) []alice.Constructor {
 	return hlogMiddlewares
 }
 
-func newFleetLockMiddlewareChain(hlogMiddlewares []alice.Constructor, ratelimitingMiddleware alice.Constructor, cc *configCache, loginCache *lru.Cache[string, bool], argon2Mutex *sync.Mutex) []alice.Constructor {
+func newFleetLockMiddlewareChain(hlogMiddlewares []alice.Constructor, ratelimitingMiddleware alice.Constructor, cc *configCache, loginCache *lru.Cache[string, struct{}], argon2Mutex *sync.Mutex) []alice.Constructor {
 	// Create middleware chain used for the FleetLock endpoints.
 	fleetLockMiddlewares := []alice.Constructor{}
 	fleetLockMiddlewares = append(fleetLockMiddlewares, hlogMiddlewares...)

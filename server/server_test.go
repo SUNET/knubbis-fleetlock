@@ -339,7 +339,7 @@ func TestFleetLockHandlers(t *testing.T) {
 			logger.Fatal().Err(err).Msg("unable to initialize config cache")
 		}
 
-		loginCache, err := lru.New[string, bool](128)
+		loginCache, err := lru.New[string, struct{}](128)
 		if err != nil {
 			logger.Fatal().Err(err).Msg("unable to initialize login LRU cache")
 		}
