@@ -391,7 +391,7 @@ func preRebootFunc(cc *configCache, timeout time.Duration) http.HandlerFunc {
 		lockerCtx, lockerCancel := context.WithTimeout(r.Context(), timeout)
 		defer lockerCancel()
 
-		logger.Info().Msg("aquiring lock")
+		logger.Info().Msg("acquiring lock")
 
 		err := groupLocker.RecursiveLock(lockerCtx, fld.ClientParams.ID)
 		if err != nil {
