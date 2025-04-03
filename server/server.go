@@ -1593,7 +1593,7 @@ func Run(configPath string) {
 	// FleetLock endpoints. Without this we need to compute
 	// expensive argon2 hashes for each request taking or releasing
 	// a lock.
-	loginCache, err := lru.New[string, struct{}](128)
+	loginCache, err := lru.New[string, struct{}](1024)
 	if err != nil {
 		logger.Fatal().Err(err).Msg("unable to initialize password LRU cache")
 	}
