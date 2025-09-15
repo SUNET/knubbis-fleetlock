@@ -1429,7 +1429,6 @@ func getEncryptionKey(logger zerolog.Logger, conf serverConfig) []byte {
 func setupACME(logger zerolog.Logger, conf serverConfig, service string) *tls.Config {
 	// We only expect to use the DNS challenge as this service is
 	// not exposed to the internet.
-	certmagic.DefaultACME.DisableHTTPChallenge = true
 	certmagic.DefaultACME.DisableTLSALPNChallenge = true
 
 	acmednsProvider := &acmedns.Provider{Configs: map[string]acmedns.DomainConfig{}}
