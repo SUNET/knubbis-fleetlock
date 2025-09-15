@@ -1,4 +1,4 @@
-FROM golang:1.24.6-bookworm AS build
+FROM golang:1.25.1-trixie AS build
 
 ARG VERSION
 
