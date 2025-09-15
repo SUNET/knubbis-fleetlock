@@ -1629,6 +1629,10 @@ func Run(configPath string) {
 	// Create middleware chain used for swagger docs endpoint
 	swaggerMiddlewares := newSwaggerMiddlewareChain(hlogMiddlewares)
 
+	// Create middleware chain used for /
+	rootMiddlewares := newRootMiddlewareChain(hlogMiddlewares)
+	rootChain := alice.New(rootMiddlewares...).Then(http.RedirectHandler("/swagger/index.html", http.StatusFound))
+
 	// Create middleware chain used for unhandled requests
 	unhandledMiddlewares := newUnhandledChain(hlogMiddlewares)
 
@@ -1655,7 +1659,7 @@ func Run(configPath string) {
 	methodNotAllowedChain := alice.New(unhandledMiddlewares...).Then(methodNotAllowedFunc())
 	notFoundChain := alice.New(unhandledMiddlewares...).Then(notFoundFunc())
 
-	router := newRouter(methodNotAllowedChain, notFoundChain, preRebootChain, steadyStateChain, lockStatusChain, staleLocksChain, apiChain, swaggerChain)
+	router := newRouter(methodNotAllowedChain, notFoundChain, rootChain, preRebootChain, steadyStateChain, lockStatusChain, staleLocksChain, apiChain, swaggerChain)
 
 	srv := &http.Server{
 		Addr:         conf.Server.Listen,
@@ -1773,6 +1777,13 @@ func newSwaggerMiddlewareChain(hlogMiddlewares []alice.Constructor) []alice.Cons
 	return swaggerMiddlewares
 }
 
+func newRootMiddlewareChain(hlogMiddlewares []alice.Constructor) []alice.Constructor {
+	rootMiddlewares := []alice.Constructor{}
+	rootMiddlewares = append(rootMiddlewares, hlogMiddlewares...)
+
+	return rootMiddlewares
+}
+
 func newUnhandledChain(hlogMiddlewares []alice.Constructor) []alice.Constructor {
 	unhandledMiddlewares := []alice.Constructor{}
 	unhandledMiddlewares = append(unhandledMiddlewares, hlogMiddlewares...)
@@ -1810,7 +1821,7 @@ func newEtcd3Client(conf etcd3config, tlsConfig *tls.Config) (*clientv3.Client, 
 	return etcd3Client, nil
 }
 
-func newRouter(methodNotAllowedChain, notFoundChain, preRebootChain, steadyStateChain, lockStatusChain, staleLocksChain, apiChain http.Handler, swaggerChain http.Handler) *httprouter.Router {
+func newRouter(methodNotAllowedChain, notFoundChain, rootChain, preRebootChain, steadyStateChain, lockStatusChain, staleLocksChain, apiChain http.Handler, swaggerChain http.Handler) *httprouter.Router {
 	router := httprouter.New()
 	router.MethodNotAllowed = methodNotAllowedChain
 	router.NotFound = notFoundChain
@@ -1823,7 +1834,7 @@ func newRouter(methodNotAllowedChain, notFoundChain, preRebootChain, steadyState
 	router.Handler("POST", "/api/v1/groups", apiChain)
 	router.Handler("DELETE", "/api/v1/groups/:group", apiChain)
 	router.Handler("GET", "/swagger/*any", swaggerChain)
-	router.Handler("GET", "/", http.RedirectHandler("/swagger/index.html", http.StatusFound))
+	router.Handler("GET", "/", rootChain)
 
 	return router
 }
