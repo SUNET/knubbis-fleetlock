@@ -296,7 +296,7 @@ func (s *Etcd3Storage) List(ctx context.Context, prefix string, recursive bool) 
 		// prefix/dir1/file1 -> dir1/file1
 		noPrefixKey := strings.TrimPrefix(key, prefix+"/")
 		// dir1/file1 -> dir1
-		part := strings.Split(noPrefixKey, "/")[0]
+		part, _, _ := strings.Cut(noPrefixKey, "/")
 
 		combinedKeys[part] = struct{}{}
 	}

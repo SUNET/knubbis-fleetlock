@@ -443,10 +443,8 @@ func (ec *Etcd3Config) AddGroup(ctx context.Context, group string, totalSlots in
 
 		// Add the group config
 		flhc[group] = fleetlock.HashedGroupSettings{
-			CommonGroupSettings: fleetlock.CommonGroupSettings{
-				TotalSlots: totalSlots,
-				StaleAge:   staleAge,
-			},
+			TotalSlots:        totalSlots,
+			StaleAge:          staleAge,
 			HashedPermissions: hashedPerms,
 		}
 
@@ -509,7 +507,7 @@ func (ec *Etcd3Config) DelGroup(ctx context.Context, group string) error {
 	}
 }
 
-func (ec *Etcd3Config) GetNotifierChan(ctx context.Context) (interface{}, error) {
+func (ec *Etcd3Config) GetNotifierChan(ctx context.Context) (any, error) {
 	rch := ec.client.Watch(ctx, ec.key)
 
 	return rch, nil

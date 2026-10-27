@@ -81,14 +81,12 @@ func GetHashedPassword(password string, salt []byte, argonSettings ArgonSettings
 	key := argon2.IDKey([]byte(password), salt, argonSettings.ArgonTime, argonSettings.ArgonMemory, argonSettings.ArgonThreads, argonSettings.ArgonHashSize)
 
 	return HashedPassword{
-		Hash: key,
-		Salt: salt,
-		ArgonSettings: ArgonSettings{
-			ArgonTime:     argonSettings.ArgonTime,
-			ArgonMemory:   argonSettings.ArgonMemory,
-			ArgonThreads:  argonSettings.ArgonThreads,
-			ArgonHashSize: argonSettings.ArgonHashSize,
-		},
+		Hash:          key,
+		Salt:          salt,
+		ArgonTime:     argonSettings.ArgonTime,
+		ArgonMemory:   argonSettings.ArgonMemory,
+		ArgonThreads:  argonSettings.ArgonThreads,
+		ArgonHashSize: argonSettings.ArgonHashSize,
 	}
 }
 

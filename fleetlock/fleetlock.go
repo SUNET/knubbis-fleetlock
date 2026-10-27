@@ -126,7 +126,7 @@ type HashedPassword struct {
 type FleetLockConfiger interface {
 	GetConfig(ctx context.Context) (FleetLockHashedConfig, error)
 	GetLockers(ctx context.Context) (map[string]FleetLocker, error)
-	GetNotifierChan(ctx context.Context) (interface{}, error)
+	GetNotifierChan(ctx context.Context) (any, error)
 	AddGroup(ctx context.Context, group string, totalSlots int, staleAge Duration, permissions map[string]string) error
 	DelGroup(ctx context.Context, group string) error
 }
@@ -141,10 +141,8 @@ func NewHashedConfig(flc FleetLockConfig, argonSettings hashing.ArgonSettings) (
 		}
 
 		flhc[group] = HashedGroupSettings{
-			CommonGroupSettings: CommonGroupSettings{
-				TotalSlots: settings.TotalSlots,
-				StaleAge:   settings.StaleAge,
-			},
+			TotalSlots:        settings.TotalSlots,
+			StaleAge:          settings.StaleAge,
 			HashedPermissions: hashedPerms,
 		}
 	}

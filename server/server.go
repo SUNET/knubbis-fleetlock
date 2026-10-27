@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"net"
 	"net/http"
 	_ "net/http/pprof" // #nosec G108 -- pprofServer is only bound to 127.0.0.1:6060
@@ -178,9 +179,7 @@ func (cc *configCache) getPerms() map[string]hashing.HashedPassword {
 
 	// Create copy while holding the lock
 	mCopy := map[string]hashing.HashedPassword{}
-	for k, v := range cc.flattenedPerms {
-		mCopy[k] = v
-	}
+	maps.Copy(mCopy, cc.flattenedPerms)
 
 	return mCopy
 }
@@ -203,9 +202,7 @@ func (cc *configCache) getMap() map[string]fleetlock.FleetLocker {
 	// stored in lrs while the caller of this function was still
 	// using it
 	mCopy := map[string]fleetlock.FleetLocker{}
-	for k, v := range cc.flMap {
-		mCopy[k] = v
-	}
+	maps.Copy(mCopy, cc.flMap)
 
 	return mCopy
 }
@@ -1446,9 +1443,7 @@ func setupACME(logger zerolog.Logger, conf serverConfig, service string) *tls.Co
 
 	// Enable DNS challenge
 	certmagic.DefaultACME.DNS01Solver = &certmagic.DNS01Solver{
-		DNSManager: certmagic.DNSManager{
-			DNSProvider: acmednsProvider,
-		},
+		DNSProvider: acmednsProvider,
 	}
 
 	if !conf.CertMagic.LetsEncryptProd {

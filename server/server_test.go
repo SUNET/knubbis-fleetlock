@@ -62,7 +62,7 @@ func (tc testConfiger) GetLockers(ctx context.Context) (map[string]fleetlock.Fle
 	return tc.flMap, nil
 }
 
-func (tc testConfiger) GetNotifierChan(ctx context.Context) (interface{}, error) {
+func (tc testConfiger) GetNotifierChan(ctx context.Context) (any, error) {
 	return nil, nil
 }
 
